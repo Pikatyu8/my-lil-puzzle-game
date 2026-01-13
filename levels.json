@@ -1,103 +1,267 @@
 [
-    {
-        "name": "Обучение: Последовательность",
-        "type": "sequence",
-        "grid": [16, 12],
-        "start": [2, 2],
-        "ans": "u u r r"
-    },
-    {
-        "name": "Лабиринт стен (Стены)",
-        "type": "sequence",
-        "grid": [10, 8],
-        "start": [1, 1],
-        "ans": "d d r r u u r r d d",
-        "walls": [
-            [[1, 1], "right", "both"],
-            [[1, 2], "right", "both"],
-            [[3, 3], "left", "outer"],
-            [[4, 2], "down", "both"]
-        ],
-        "hint": "Зеленые стены просто преграждают путь"
-    },
-    {
-        "name": "Смертельный коридор (Яд)",
-        "type": "sequence",
-        "grid": [10, 8],
-        "start": [0, 4],
-        "ans": "r r r r r r r r",
-        "poison": [
-            [[2, 4], "up", "outer"],
-            [[2, 4], "down", "outer"],
-            [[4, 4], "up", "outer"],
-            [[4, 4], "down", "outer"],
-            [[6, 4], "right", "both"]
-        ],
-        "hint": "Красные линии смертельны. Если коснуться - рестарт!"
-    },
-    {
-        "name": "Квадрат",
-        "type": "sequence",
-        "grid": [16, 12],
-        "start": [7, 5],
-        "ans": "l l u u r r d d"
-    },
-    {
-        "name": "Угловая задача",
-        "type": "condition",
-        "grid": [12, 10],
-        "start": [5, 5],
-        "conditions": [
-            {
-                "check": "cell_has_steps",
-                "cells": "corners",
-                "match": "any",
-                "required_steps": [11]
-            }
-        ],
-        "hint": "Доберитесь до любого угла ровно за 11 шагов"
-    },
-    {
-    "name": "Марш-бросок на 9,8",
+  {
+    "name": "1. Первые шаги",
+    "grid": [3, 3],
+    "start": [0, 0],
     "type": "condition",
-    "grid": [16, 12],
-    "start": [2, 2],
+    "hint": "Просто дойди до противоположного угла",
     "conditions": [
-      {
-        "check": "total_steps",
-        "count": 13,
-        "operator": "==",
-        "hint": "Сделайте ровно 13 шагов"
-      },
-      {
-        "check": "end_at",
-        "cells": [[9, 8]],
-        "hint": "Закончите путь в 9,8"
-      }
-    ],
-    "hint": "Кратчайший путь до 9,8 занимает ровно 13 шагов. Не сворачивайте!",
-    "poison": [
-        [[5, 5], "up", "outer"],
-        [[6, 6], "down", "outer"]
+      {"check": "end_at", "cells": [[2, 2]]}
     ]
   },
   {
-    "name": "Сложный путь",
+    "name": "2. Точный путь",
+    "grid": [3, 3],
+    "start": [0, 0],
     "type": "condition",
-    "grid": [8, 8],
-    "start": [2, 2],
-    "hint": "Нужно быть в (3,2) на шагах 3 и 8, и достичь (4,5) до 12-го шага",
+    "hint": "Дойди до угла ровно за 4 шага",
     "conditions": [
-        {
-        "check": "cell_has_steps",
-        "cells": [[3, 2]],
-        "required_steps": [3, 8]
-        },
-        {
-        "check": "reach_before_step",
-        "cells": [[4, 5]],
-        "step": 13
-        }
+      {"check": "end_at", "cells": [[2, 2]]},
+      {"check": "total_steps", "count": 4, "operator": "=="}
     ]
-    }
+  },
+  {
+    "name": "3. Длинный путь",
+    "grid": [3, 3],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Дойди до угла, но сделай НЕ МЕНЬШЕ 6 шагов",
+    "conditions": [
+      {"check": "end_at", "cells": [[2, 2]]},
+      {"check": "total_steps", "count": 6, "operator": ">="}
+    ]
+  },
+  {
+    "name": "4. Запретный центр",
+    "grid": [3, 3],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Дойди до угла, НЕ заходя в центр",
+    "conditions": [
+      {"check": "end_at", "cells": [[2, 2]]},
+      {"check": "avoid_cells", "cells": [[1, 1]]}
+    ]
+  },
+  {
+    "name": "5. Обязательная остановка",
+    "grid": [3, 3],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Пройди ЧЕРЕЗ центр к углу за 5 шагов",
+    "conditions": [
+      {"check": "visit_cells", "cells": [[1, 1]], "match": "all"},
+      {"check": "end_at", "cells": [[2, 2]]},
+      {"check": "total_steps", "count": 5, "operator": "=="}
+    ]
+  },
+  {
+    "name": "6. Четыре угла",
+    "grid": [3, 3],
+    "start": [1, 1],
+    "type": "condition",
+    "hint": "Посети все 4 угла, стартуя из центра",
+    "conditions": [
+      {"check": "visit_cells", "cells": "corners", "match": "all"}
+    ]
+  },
+  {
+    "name": "7. Строгий порядок",
+    "grid": [3, 3],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Посети углы ПО ЧАСОВОЙ стрелке",
+    "conditions": [
+      {"check": "visit_order", "cells": [[0, 0], [2, 0], [2, 2], [0, 2]]}
+    ]
+  },
+  {
+    "name": "8. Возвращение",
+    "grid": [3, 3],
+    "start": [1, 1],
+    "type": "condition",
+    "hint": "Посети центр минимум 3 раза за ≤8 шагов",
+    "conditions": [
+      {"check": "visit_count", "cells": [[1, 1]], "count": 3, "operator": ">="},
+      {"check": "total_steps", "count": 8, "operator": "<="}
+    ]
+  },
+  {
+    "name": "9. Змейка",
+    "grid": [3, 3],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Пройди ВСЕ 9 клеток без повторов",
+    "conditions": [
+      {"check": "no_revisit"},
+      {"check": "total_steps", "count": 8, "operator": "=="}
+    ]
+  },
+  {
+    "name": "10. Первая стена",
+    "grid": [3, 3],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Стена блокирует прямой путь! Обойди.",
+    "walls": [
+      [[1, 0], "down", "both"],
+      [[1, 1], "down", "both"]
+    ],
+    "conditions": [
+      {"check": "end_at", "cells": [[2, 2]]}
+    ]
+  },
+  {
+    "name": "11. Лабиринт",
+    "grid": [4, 4],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Пройди лабиринт ровно за 12 шагов, не наступая на клетки дважды",
+    "walls": [
+      [[0, 0], "right", "both"],
+      [[0, 2], "down", "both"],
+      [[1, 1], "down", "both"],
+      [[2, 0], "down", "both"],
+      [[2, 2], "right", "both"],
+      [[2, 2], "down", "both"],
+      [[1, 3], "right", "both"]
+    ],
+    "conditions": [
+      {"check": "end_at", "cells": [[3, 3]]},
+      {"check": "total_steps", "count": 12, "operator": "=="},
+      {"check": "no_revisit"}
+    ]
+  },
+  {
+    "name": "12. Минное поле",
+    "grid": [4, 4],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Красные линии = мгновенная смерть!",
+    "poison": [
+      [[1, 1], "right", "both"],
+      [[1, 1], "down", "both"],
+      [[2, 2], "left", "both"],
+      [[2, 2], "up", "both"]
+    ],
+    "conditions": [
+      {"check": "end_at", "cells": [[3, 3]]}
+    ]
+  },
+  {
+    "name": "13. Точное время",
+    "grid": [3, 3],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Попади в центр ИМЕННО на 2-м шаге",
+    "conditions": [
+      {"check": "first_visit_at_step", "cells": [[1, 1]], "step": 2},
+      {"check": "end_at", "cells": [[2, 2]]},
+      {"check": "total_steps", "count": 4, "operator": "=="}
+    ]
+  },
+  {
+    "name": "14. Выбор пути",
+    "grid": [3, 3],
+    "start": [1, 1],
+    "type": "condition",
+    "hint": "Закончи в (0,0) ИЛИ (2,2), но НЕ в обоих",
+    "conditions": [
+      {
+        "check": "group",
+        "logic": "XOR",
+        "items": [
+          {"check": "end_at", "cells": [[0, 0]]},
+          {"check": "end_at", "cells": [[2, 2]]}
+        ]
+      },
+      {"check": "avoid_cells", "cells": [[2, 0], [0, 2]]},
+      {"check": "total_steps", "count": 4, "operator": "=="}
+    ]
+  },
+  {
+    "name": "15. Топтание",
+    "grid": [3, 3],
+    "start": [1, 1],
+    "type": "condition",
+    "hint": "Дойди до угла (2,2), потопчись ТАМ (бейся в границу!), затем посети (0,0)",
+    "conditions": [
+      {"check": "consecutive_visits", "cells": [[2, 2]], "count": 3},
+      {"check": "visit_cells", "cells": [[0, 0]], "match": "all"}
+    ]
+  },
+  {
+    "name": "16. Коллекционер",
+    "grid": [4, 4],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Собери ВСЕ углы по краям, избегая центр 2x2",
+    "conditions": [
+      {"check": "visit_cells", "cells": "corners", "match": "all"},
+      {"check": "avoid_cells", "cells": [[1, 1], [2, 2], [1, 2], [2, 1]]},
+      {"check": "end_at", "cells": [[3, 3]]}
+    ]
+  },
+  {
+    "name": "17. Двойной агент",
+    "grid": [3, 3],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Посети центр РОВНО 2 раза за 6 шагов",
+    "conditions": [
+      {"check": "visit_count", "cells": [[1, 1]], "count": 2, "operator": "=="},
+      {"check": "end_at", "cells": [[2, 2]]},
+      {"check": "total_steps", "count": 6, "operator": "=="}
+    ]
+  },
+  {
+    "name": "18. Узкий коридор",
+    "grid": [4, 4],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Стены + яд = один безопасный путь",
+    "walls": [
+      [[0, 1], "right", "both"],
+      [[2, 0], "down", "both"],
+      [[3, 1], "down", "both"]
+    ],
+    "poison": [
+      [[1, 2], "down", "both"],
+      [[2, 3], "left", "both"]
+    ],
+    "conditions": [
+      {"check": "end_at", "cells": [[3, 3]]}
+    ]
+  },
+  {
+    "name": "19. Хронометраж",
+    "grid": [4, 4],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Центр (1,1) на 2-м шаге, угол (3,3) на 6-м",
+    "conditions": [
+        {"check": "first_visit_at_step", "cells": [[1, 1]], "step": 2},
+        {"check": "first_visit_at_step", "cells": [[3, 3]], "step": 6},
+        {"check": "end_at", "cells": [[0, 0]]}
+    ]
+  },
+  {
+    "name": "20. ФИНАЛЬНЫЙ БОСС",
+    "grid": [4, 4],
+    "start": [0, 0],
+    "type": "condition",
+    "hint": "Углы: (3,0)→(3,3)→(0,3). Центр запрещён. Посети (1,2)!",
+    "walls": [
+        [[1, 0], "down", "both"],
+        [[0, 2], "right", "both"]
+    ],
+    "poison": [
+        [[2, 2], "down", "both"]
+    ],
+    "conditions": [
+        {"check": "visit_order", "cells": [[3, 0], [3, 3], [0, 3]]},
+        {"check": "avoid_cells", "cells": [[1, 1], [2, 1]]},
+        {"check": "visit_cells", "cells": [[1, 2]], "match": "all"},
+        {"check": "total_steps", "count": 12, "operator": "<="}
+    ]
+  }
 ]
