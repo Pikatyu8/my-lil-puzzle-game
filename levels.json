@@ -80,5 +80,24 @@
         [[5, 5], "up", "outer"],
         [[6, 6], "down", "outer"]
     ]
-  }
+  },
+  {
+    "name": "Сложный путь",
+    "type": "condition",
+    "grid": [8, 8],
+    "start": [2, 2],
+    "hint": "Нужно быть в (3,2) на шагах 3 и 8, и достичь (4,5) до 12-го шага",
+    "conditions": [
+        {
+        "check": "cell_has_steps",
+        "cells": [[3, 2]],
+        "required_steps": [3, 8]
+        },
+        {
+        "check": "reach_before_step",
+        "cells": [[4, 5]],
+        "step": 13
+        }
+    ]
+    }
 ]
