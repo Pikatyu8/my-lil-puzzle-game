@@ -20,7 +20,8 @@ COLOR_WALL = (128, 255, 176)
 COLOR_REQUIREMENT = (100, 180, 255)
 COLOR_REQUIREMENT_AVOID = (255, 100, 100)
 COLOR_REQUIREMENT_END = (100, 255, 100)
-COLOR_GLOBAL_REQ = (255, 220, 100)  # Жёлтый для глобальных условий
+COLOR_GLOBAL_REQ = (255, 220, 100)
+COLOR_AVOID_STEP = (255, 80, 180)  # Розовый для запрета на шагах
 
 # Глобальные переменные
 dev_recording = []
@@ -28,7 +29,7 @@ path_positions = []
 game_running = True
 dev_access_granted = False
 dev_show_coords = False
-dev_disable_victory = False  # <--- НОВАЯ ПЕРЕМЕННАЯ: Блокировка победы
+dev_disable_victory = False
 
 # Динамические размеры
 WINDOW_WIDTH = 800
@@ -68,27 +69,19 @@ def load_levels():
                     if "cells" in cond and isinstance(cond["cells"], list):
                         cond["cells"] = [tuple(c) for c in cond["cells"]]
             
-            # --- ОБНОВЛЕННАЯ ЛОГИКА ДЛЯ СТЕН И ЯДА ---
             for key in ["poison", "walls"]:
                 if key in lvl:
                     processed = []
                     for item in lvl[key]:
-                        coords = tuple(item[0]) # Координаты всегда первые
-                        
-                        # 1. Поддержка старого формата: [[x,y], "side", "type"]
+                        coords = tuple(item[0])
                         if len(item) == 3 and isinstance(item[1], str):
                             processed.append((coords, item[1], item[2]))
-                        
-                        # 2. Поддержка нового формата: [[x,y], {"down": "outer"}, {"right": "inner"}]
-                        #    Или даже: [[x,y], {"down": "outer", "right": "inner"}]
                         else:
                             for part in item[1:]:
                                 if isinstance(part, dict):
                                     for side, b_type in part.items():
                                         processed.append((coords, side, b_type))
-                                        
                     lvl[key] = processed
-            # -----------------------------------------
                         
         return data
     except Exception as e:
@@ -114,6 +107,38 @@ def resolve_cells(cells_spec, grid_cols, grid_rows):
     elif cells_spec == "center":
         return [(grid_cols // 2, grid_rows // 2)]
     return []
+
+def parse_step_constraint(condition):
+    """Парсит параметры шагов из условия. Возвращает set шагов."""
+    forbidden_steps = set()
+    
+    if "steps" in condition:
+        # Список конкретных шагов: [2, 4, 6, 8]
+        forbidden_steps = set(condition["steps"])
+    elif "step_range" in condition:
+        # Диапазон: [2, 5] -> шаги 2, 3, 4, 5
+        start, end = condition["step_range"]
+        forbidden_steps = set(range(start, end + 1))
+    elif "step" in condition:
+        # Один шаг: 4
+        forbidden_steps = {condition["step"]}
+    
+    return forbidden_steps
+
+def format_step_constraint(condition):
+    """Форматирует ограничение шагов для отображения."""
+    if "steps" in condition:
+        steps = condition["steps"]
+        if len(steps) <= 3:
+            return ",".join(map(str, steps))
+        else:
+            return f"{min(steps)}..{max(steps)}"
+    elif "step_range" in condition:
+        start, end = condition["step_range"]
+        return f"{start}-{end}"
+    elif "step" in condition:
+        return str(condition["step"])
+    return "?"
 
 # =============================================================================
 # СИСТЕМА ТРЕБОВАНИЙ
@@ -196,6 +221,18 @@ def get_condition_requirements(level_data, grid_cols, grid_rows):
             for cell in cells:
                 add_req(cell, "✕", "avoid")
         
+        # === НОВОЕ: Запрет на определённых шагах ===
+        elif check_type == "avoid_at_steps":
+            step_text = format_step_constraint(cond)
+            for cell in cells:
+                add_req(cell, f"⊘{step_text}", "avoid_step")
+        
+        # === НОВОЕ: Обязательно быть на определённых шагах ===
+        elif check_type == "require_at_steps":
+            step_text = format_step_constraint(cond)
+            for cell in cells:
+                add_req(cell, f"✓{step_text}", "require_step")
+        
         elif check_type == "end_at":
             for cell in cells:
                 add_req(cell, "◎", "end")
@@ -261,7 +298,37 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return not any(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
         return False
 
-    # ... Остальные проверки условий (без изменений) ...
+    # === НОВОЕ: Запрет нахождения в клетках на определённых шагах ===
+    if check_type == "avoid_at_steps":
+        cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
+        forbidden_steps = parse_step_constraint(condition)
+        
+        # Проверяем: если игрок был в этих клетках на запрещённых шагах - FAIL
+        for step_num, pos in enumerate(path_positions):
+            if pos in cells and step_num in forbidden_steps:
+                return False
+        return True
+    
+    # === НОВОЕ: Обязательное нахождение в клетках на определённых шагах ===
+    if check_type == "require_at_steps":
+        cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
+        required_steps = parse_step_constraint(condition)
+        match_mode = condition.get("match", "any")  # any = хотя бы одна клетка
+        
+        # Собираем, какие клетки были посещены на каких шагах
+        steps_in_cells = set()
+        for step_num, pos in enumerate(path_positions):
+            if pos in cells and step_num in required_steps:
+                steps_in_cells.add(step_num)
+        
+        if match_mode == "any":
+            # Хотя бы один требуемый шаг должен быть в указанных клетках
+            return len(steps_in_cells) > 0
+        else:
+            # Все требуемые шаги должны быть в указанных клетках
+            return steps_in_cells == required_steps
+
+    # ... Остальные проверки условий ...
     if check_type == "cell_has_steps":
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         match_mode = condition.get("match", "any")
@@ -501,6 +568,32 @@ def draw_requirements(surface, requirements, cell_size, font):
                 offset = int(radius * 0.8)
                 pygame.draw.line(surface, color, (center_x - offset, center_y - offset), (center_x + offset, center_y + offset), 2)
                 pygame.draw.line(surface, color, (center_x + offset, center_y - offset), (center_x - offset, center_y + offset), 2)
+            
+            # === НОВОЕ: Отрисовка запрета на шагах ===
+            elif req_type == "avoid_step":
+                color = COLOR_AVOID_STEP
+                # Рисуем перечёркнутый круг с текстом
+                pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
+                pygame.draw.line(surface, color, 
+                    (center_x - radius + 2, center_y + radius - 2),
+                    (center_x + radius - 2, center_y - radius + 2), 2)
+                # Текст (убираем символ ⊘)
+                display_text = text.replace("⊘", "")
+                req_font = pygame.font.SysFont("Arial", max(8, int(mini_size * 0.5)), bold=True)
+                txt_surf = req_font.render(display_text, True, color)
+                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
+                surface.blit(txt_surf, txt_rect)
+            
+            # === НОВОЕ: Отрисовка обязательных шагов ===
+            elif req_type == "require_step":
+                color = (100, 255, 150)  # Зелёный
+                pygame.draw.circle(surface, color, (center_x, center_y), radius, 2)
+                display_text = text.replace("✓", "")
+                req_font = pygame.font.SysFont("Arial", max(8, int(mini_size * 0.5)), bold=True)
+                txt_surf = req_font.render(display_text, True, color)
+                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
+                surface.blit(txt_surf, txt_rect)
+            
             elif req_type == "end":
                 color = COLOR_REQUIREMENT_END
                 pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
@@ -571,11 +664,11 @@ def normalize_ans(ans_str):
     return [mapping[move] for move in ans_str.lower().split() if move in mapping]
 
 def draw_grid(surface, width, height, cell_size):
-    # Добавляем +1 к range, чтобы отрисовалась последняя линия справа и снизу
     for x in range(0, width + 1, cell_size): 
         pygame.draw.line(surface, COLOR_GRID, (x, 0), (x, height))
     for y in range(0, height + 1, cell_size): 
         pygame.draw.line(surface, COLOR_GRID, (0, y), (width, y))
+
 # =============================================================================
 # РАЗРАБОТЧИК
 # =============================================================================
@@ -673,7 +766,6 @@ def run_game(selected_idx, hints_enabled):
         level_data = LEVELS[idx]
         GRID_COLS, GRID_ROWS = level_data.get("grid", (16, 12))
         
-        # Расчет размеров сетки и окна
         max_w = screen_w * 0.85 
         max_h = screen_h * 0.85
         CELL_SIZE = int(min(max_w // GRID_COLS, max_h // GRID_ROWS))
@@ -681,7 +773,6 @@ def run_game(selected_idx, hints_enabled):
         grid_pix_w = CELL_SIZE * GRID_COLS
         grid_pix_h = CELL_SIZE * GRID_ROWS
         
-        # Отступ 5%
         GRID_OFFSET_X = int(grid_pix_w * 0.05)
         GRID_OFFSET_Y = int(grid_pix_h * 0.05)
         
@@ -689,7 +780,6 @@ def run_game(selected_idx, hints_enabled):
         WINDOW_HEIGHT = grid_pix_h + GRID_OFFSET_Y * 2
         
         screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        # Surface для игрового поля
         game_surface = pygame.Surface((grid_pix_w + 1, grid_pix_h + 1), pygame.SRCALPHA)
         
         level_type = level_data.get("type", "sequence")
@@ -702,7 +792,6 @@ def run_game(selected_idx, hints_enabled):
         poison_data = level_data.get("poison", [])[:]
         walls_data = level_data.get("walls", [])[:]
 
-        # Обработка wall_is_poison
         wall_poison_flag = level_data.get("wall_is_poison", False)
         if wall_poison_flag:
             exceptions = []
@@ -748,7 +837,6 @@ def run_game(selected_idx, hints_enabled):
     font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
     font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
     font_requirements = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
-    # Уменьшенный шрифт глобальных условий
     font_global = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
 
     while game_running:
@@ -762,7 +850,6 @@ def run_game(selected_idx, hints_enabled):
 
                 if event.key == pygame.K_r:
                     load_level_data(current_idx)
-                    # Сброс шрифтов при рестарте (на случай изменения размера окна/ячеек)
                     font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
                     font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
                     font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
@@ -836,7 +923,6 @@ def run_game(selected_idx, hints_enabled):
         screen.fill(COLOR_BG)
         game_surface.fill(COLOR_BG)
         
-        # 1. СЕТКА И ЗОНЫ
         draw_grid(game_surface, GRID_COLS*CELL_SIZE, GRID_ROWS*CELL_SIZE, CELL_SIZE)
         
         if level_type == "sequence" and target_grid_pos:
@@ -846,12 +932,9 @@ def run_game(selected_idx, hints_enabled):
             for cell in condition_cells:
                 pygame.draw.rect(game_surface, COLOR_CONDITION_HINT, (cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE))
         
-        # 2. БАРЬЕРЫ
         draw_barriers(game_surface, walls_data, COLOR_WALL, CELL_SIZE)
         draw_barriers(game_surface, poison_data, COLOR_POISON, CELL_SIZE)
 
-        # 3. ШАГИ (под игроком)
-        # Если включен режим требований, шаги не рисуем, чтобы не перегружать
         if not (show_requirements and (level_requirements or global_requirements)):
             cell_data = {}
             for step_num, pos in enumerate(path_positions):
@@ -863,15 +946,12 @@ def run_game(selected_idx, hints_enabled):
                     txt_surf = current_font.render(str(val), True, COLOR_TEXT)
                     game_surface.blit(txt_surf, (pos[0]*CELL_SIZE+2+(i%3)*(CELL_SIZE//3), pos[1]*CELL_SIZE+2+(i//3)*(CELL_SIZE//3)))
 
-        # 4. ИГРОК
         px, py = player_pos[0]*CELL_SIZE + CELL_SIZE//2, player_pos[1]*CELL_SIZE + CELL_SIZE//2
         pygame.draw.circle(game_surface, COLOR_PLAYER, (px, py), int(CELL_SIZE * 0.4))
 
-        # 5. ЛОКАЛЬНЫЕ ТРЕБОВАНИЯ (поверх игрока)
         if show_requirements and level_requirements:
             draw_requirements(game_surface, level_requirements, CELL_SIZE, font_requirements)
 
-        # 6. DEV КООРДИНАТЫ (правый нижний угол клетки)
         if dev_show_coords:
             for gy in range(GRID_ROWS):
                 for gx in range(GRID_COLS):
@@ -881,10 +961,8 @@ def run_game(selected_idx, hints_enabled):
                     ty = (gy + 1) * CELL_SIZE - txt_surf.get_height() - 3
                     game_surface.blit(txt_surf, (tx, ty))
 
-        # 7. НАКЛАДЫВАЕМ ПОЛЕ НА ЭКРАН
         screen.blit(game_surface, (GRID_OFFSET_X, GRID_OFFSET_Y))
 
-        # 8. ГЛОБАЛЬНЫЕ ТРЕБОВАНИЯ (Поверх всего экрана)
         if show_requirements and global_requirements:
             draw_global_requirements(screen, global_requirements, font_global, WINDOW_WIDTH)
 
@@ -893,6 +971,7 @@ def run_game(selected_idx, hints_enabled):
 
     pygame.quit()
     sys.exit()
+
 if __name__ == "__main__":
     print("\n" + "=" * 50 + "\n        GRID PUZZLE GAME\n" + "=" * 50)
     hint_input = input("Включить подсказки? ('да' или Enter): ").strip().lower()
