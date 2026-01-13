@@ -21,7 +21,8 @@ COLOR_REQUIREMENT = (100, 180, 255)
 COLOR_REQUIREMENT_AVOID = (255, 100, 100)
 COLOR_REQUIREMENT_END = (100, 255, 100)
 COLOR_GLOBAL_REQ = (255, 220, 100)
-COLOR_AVOID_STEP = (255, 80, 180)  # Розовый для запрета на шагах
+COLOR_AVOID_STEP = (255, 80, 180)
+COLOR_REQUIREMENT_STEP = (100, 255, 150)
 
 # Глобальные переменные
 dev_recording = []
@@ -31,64 +32,75 @@ dev_access_granted = False
 dev_show_coords = False
 dev_disable_victory = False
 
-# Динамические размеры
+# Динамические размеры (обновляются при загрузке уровня)
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
 CELL_SIZE = 50
 GRID_COLS = 16
 GRID_ROWS = 12
 
+# Будет заполнено при старте игры
+LEVELS = []
+
 # =============================================================================
 # РАБОТА С ФАЙЛАМИ И JSON
 # =============================================================================
 
 def resource_path(relative_path):
+    """ Получает путь к ресурсу, работает для dev и для PyInstaller """
     try:
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-def load_levels():
-    path = resource_path("levels.json")
-    
+def process_level_data(data):
+    """ Обрабатывает "сырые" данные из JSON (преобразует списки в кортежи) """
+    for lvl in data:
+        if "grid" in lvl: lvl["grid"] = tuple(lvl["grid"])
+        if "start" in lvl: lvl["start"] = tuple(lvl["start"])
+        
+        if "conditions" in lvl:
+            for cond in lvl["conditions"]:
+                if "cells" in cond and isinstance(cond["cells"], list):
+                    cond["cells"] = [tuple(c) for c in cond["cells"]]
+        
+        for key in ["poison", "walls"]:
+            if key in lvl:
+                processed = []
+                for item in lvl[key]:
+                    coords = tuple(item[0])
+                    if len(item) == 3 and isinstance(item[1], str):
+                        processed.append((coords, item[1], item[2]))
+                    else:
+                        for part in item[1:]:
+                            if isinstance(part, dict):
+                                for side, b_type in part.items():
+                                    processed.append((coords, side, b_type))
+                lvl[key] = processed
+    return data
+
+def load_levels_from_file(filename, is_internal=True):
+    """ Загружает уровни. Если is_internal=True, ищет внутри exe, иначе снаружи. """
+    if is_internal:
+        path = resource_path(filename)
+        source_desc = "ВНУТРЕННИЙ ФАЙЛ"
+    else:
+        path = os.path.abspath(filename)
+        source_desc = "ВНЕШНИЙ ФАЙЛ"
+
     if not os.path.exists(path):
-        print(f"[ERROR] Файл уровней не найден: {path}")
-        sys.exit(1)
+        print(f"[ERROR] Файл уровней не найден: {path} ({source_desc})")
+        return None
 
     try:
+        print(f"[LOAD] Загрузка уровней из: {path}")
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            
-        for lvl in data:
-            if "grid" in lvl: lvl["grid"] = tuple(lvl["grid"])
-            if "start" in lvl: lvl["start"] = tuple(lvl["start"])
-            
-            if "conditions" in lvl:
-                for cond in lvl["conditions"]:
-                    if "cells" in cond and isinstance(cond["cells"], list):
-                        cond["cells"] = [tuple(c) for c in cond["cells"]]
-            
-            for key in ["poison", "walls"]:
-                if key in lvl:
-                    processed = []
-                    for item in lvl[key]:
-                        coords = tuple(item[0])
-                        if len(item) == 3 and isinstance(item[1], str):
-                            processed.append((coords, item[1], item[2]))
-                        else:
-                            for part in item[1:]:
-                                if isinstance(part, dict):
-                                    for side, b_type in part.items():
-                                        processed.append((coords, side, b_type))
-                    lvl[key] = processed
-                        
-        return data
+        return process_level_data(data)
     except Exception as e:
-        print(f"[ERROR] Ошибка чтения JSON: {e}")
-        sys.exit(1)
-
-LEVELS = load_levels()
+        print(f"[ERROR] Ошибка чтения JSON ({path}): {e}")
+        return None
 
 # =============================================================================
 # ЛОГИКА ИГРЫ И ПРОВЕРКИ
@@ -109,24 +121,17 @@ def resolve_cells(cells_spec, grid_cols, grid_rows):
     return []
 
 def parse_step_constraint(condition):
-    """Парсит параметры шагов из условия. Возвращает set шагов."""
     forbidden_steps = set()
-    
     if "steps" in condition:
-        # Список конкретных шагов: [2, 4, 6, 8]
         forbidden_steps = set(condition["steps"])
     elif "step_range" in condition:
-        # Диапазон: [2, 5] -> шаги 2, 3, 4, 5
         start, end = condition["step_range"]
         forbidden_steps = set(range(start, end + 1))
     elif "step" in condition:
-        # Один шаг: 4
         forbidden_steps = {condition["step"]}
-    
     return forbidden_steps
 
 def format_step_constraint(condition):
-    """Форматирует ограничение шагов для отображения."""
     if "steps" in condition:
         steps = condition["steps"]
         if len(steps) <= 3:
@@ -221,13 +226,11 @@ def get_condition_requirements(level_data, grid_cols, grid_rows):
             for cell in cells:
                 add_req(cell, "✕", "avoid")
         
-        # === НОВОЕ: Запрет на определённых шагах ===
         elif check_type == "avoid_at_steps":
             step_text = format_step_constraint(cond)
             for cell in cells:
                 add_req(cell, f"⊘{step_text}", "avoid_step")
         
-        # === НОВОЕ: Обязательно быть на определённых шагах ===
         elif check_type == "require_at_steps":
             step_text = format_step_constraint(cond)
             for cell in cells:
@@ -264,6 +267,15 @@ def get_condition_requirements(level_data, grid_cols, grid_rows):
             op_symbols = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<", "!=": "≠"}
             symbol = op_symbols.get(op, "=")
             add_global_req(f"Шагов: {symbol}{count}", "steps")
+        
+        elif check_type == "visit_except_at_steps":
+            step_text = format_step_constraint(cond)
+            cells = resolve_cells(cond["cells"], grid_cols, grid_rows)
+            for cell in cells:
+                # Рисуем и "посетить", и "запрет на шагах"
+                add_req(cell, "•", "visit")
+                add_req(cell, f"⊘{step_text}", "avoid_step")
+
     
     for cond in level_data.get("conditions", []):
         process_condition(cond)
@@ -298,37 +310,27 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return not any(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
         return False
 
-    # === НОВОЕ: Запрет нахождения в клетках на определённых шагах ===
     if check_type == "avoid_at_steps":
         cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
         forbidden_steps = parse_step_constraint(condition)
-        
-        # Проверяем: если игрок был в этих клетках на запрещённых шагах - FAIL
         for step_num, pos in enumerate(path_positions):
             if pos in cells and step_num in forbidden_steps:
                 return False
         return True
     
-    # === НОВОЕ: Обязательное нахождение в клетках на определённых шагах ===
     if check_type == "require_at_steps":
         cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
         required_steps = parse_step_constraint(condition)
-        match_mode = condition.get("match", "any")  # any = хотя бы одна клетка
-        
-        # Собираем, какие клетки были посещены на каких шагах
+        match_mode = condition.get("match", "any")
         steps_in_cells = set()
         for step_num, pos in enumerate(path_positions):
             if pos in cells and step_num in required_steps:
                 steps_in_cells.add(step_num)
-        
         if match_mode == "any":
-            # Хотя бы один требуемый шаг должен быть в указанных клетках
             return len(steps_in_cells) > 0
         else:
-            # Все требуемые шаги должны быть в указанных клетках
             return steps_in_cells == required_steps
 
-    # ... Остальные проверки условий ...
     if check_type == "cell_has_steps":
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         match_mode = condition.get("match", "any")
@@ -465,8 +467,26 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
         for pos, count in visit_counts.items():
             if count > 1 and pos not in exceptions: return False
         return True
-
+    elif check_type == "visit_except_at_steps":
+        cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
+        forbidden_steps = parse_step_constraint(condition)
+        match_mode = condition.get("match", "all")
+        
+        visited_validly = set()
+        for step_num, pos in enumerate(path_positions):
+            if pos in cells:
+                # Если наступили в клетку на запрещенном шаге — условие провалено сразу
+                if step_num in forbidden_steps:
+                    return False 
+                visited_validly.add(pos)
+        
+        if match_mode == "any":
+            return len(visited_validly) > 0
+        else:  # match_mode == "all"
+            return cells.issubset(visited_validly)
     return False
+
+
 
 def check_all_conditions(conditions, path_positions, player_pos, grid_cols, grid_rows):
     for cond in conditions:
@@ -569,24 +589,20 @@ def draw_requirements(surface, requirements, cell_size, font):
                 pygame.draw.line(surface, color, (center_x - offset, center_y - offset), (center_x + offset, center_y + offset), 2)
                 pygame.draw.line(surface, color, (center_x + offset, center_y - offset), (center_x - offset, center_y + offset), 2)
             
-            # === НОВОЕ: Отрисовка запрета на шагах ===
             elif req_type == "avoid_step":
                 color = COLOR_AVOID_STEP
-                # Рисуем перечёркнутый круг с текстом
                 pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
                 pygame.draw.line(surface, color, 
                     (center_x - radius + 2, center_y + radius - 2),
                     (center_x + radius - 2, center_y - radius + 2), 2)
-                # Текст (убираем символ ⊘)
                 display_text = text.replace("⊘", "")
                 req_font = pygame.font.SysFont("Arial", max(8, int(mini_size * 0.5)), bold=True)
                 txt_surf = req_font.render(display_text, True, color)
                 txt_rect = txt_surf.get_rect(center=(center_x, center_y))
                 surface.blit(txt_surf, txt_rect)
             
-            # === НОВОЕ: Отрисовка обязательных шагов ===
             elif req_type == "require_step":
-                color = (100, 255, 150)  # Зелёный
+                color = COLOR_REQUIREMENT_STEP
                 pygame.draw.circle(surface, color, (center_x, center_y), radius, 2)
                 display_text = text.replace("✓", "")
                 req_font = pygame.font.SysFont("Arial", max(8, int(mini_size * 0.5)), bold=True)
@@ -724,6 +740,10 @@ def print_menu():
 def run_game(selected_idx, hints_enabled):
     global game_running, dev_recording, dev_access_granted, path_positions, dev_disable_victory
     global WINDOW_WIDTH, WINDOW_HEIGHT, CELL_SIZE, GRID_COLS, GRID_ROWS
+    
+    if not LEVELS:
+        print("[CRITICAL] Нет уровней для загрузки.")
+        sys.exit(1)
 
     pygame.init()
     pygame.font.init()
@@ -974,13 +994,41 @@ def run_game(selected_idx, hints_enabled):
 
 if __name__ == "__main__":
     print("\n" + "=" * 50 + "\n        GRID PUZZLE GAME\n" + "=" * 50)
+    
+    # === ЛОГИКА ЗАГРУЗКИ ПОЛЬЗОВАТЕЛЬСКИХ УРОВНЕЙ ===
+    check_user = input("Проверить наличие user_levels.json и загрузить? (да/yes/y): ").strip().lower()
+    
+    if check_user in ("да", "yes", "y"):
+        if os.path.exists("user_levels.json"):
+            LEVELS = load_levels_from_file("user_levels.json", is_internal=False)
+            if not LEVELS:
+                print("Не удалось загрузить внешние уровни. Загрузка стандартных...")
+                LEVELS = load_levels_from_file("levels.json", is_internal=True)
+        else:
+            print("user_levels.json не найден. Загрузка стандартных...")
+            LEVELS = load_levels_from_file("levels.json", is_internal=True)
+    else:
+        LEVELS = load_levels_from_file("levels.json", is_internal=True)
+
+    if not LEVELS:
+        print("Ошибка: Не удалось загрузить ни одни уровни. Выход.")
+        sys.exit(1)
+
     hint_input = input("Включить подсказки? ('да' или Enter): ").strip().lower()
     hints_enabled = hint_input in ("да", "yes", "y", "подсказывать")
     
-    print("\nДоступные уровни:")
+    print(f"\nЗагружено уровней: {len(LEVELS)}")
+    print("Доступные уровни:")
     for i, lvl in enumerate(LEVELS):
         print(f"  {i+1}. [{ 'SEQ' if lvl.get('type')=='sequence' else 'COND' }] {lvl.get('name', f'Уровень {i+1}')}")
     
     try:
-        run_game(max(0, min(int(input(f"\nВыберите уровень (1-{len(LEVELS)}): ")) - 1, len(LEVELS) - 1)), hints_enabled)
-    except: run_game(0, hints_enabled)
+        choice = input(f"\nВыберите уровень (1-{len(LEVELS)}): ")
+        if choice.strip() == "":
+            idx = 0
+        else:
+            idx = int(choice) - 1
+        
+        run_game(max(0, min(idx, len(LEVELS) - 1)), hints_enabled)
+    except ValueError:
+        run_game(0, hints_enabled)
