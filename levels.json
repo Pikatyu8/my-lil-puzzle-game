@@ -1,0 +1,84 @@
+[
+    {
+        "name": "Обучение: Последовательность",
+        "type": "sequence",
+        "grid": [16, 12],
+        "start": [2, 2],
+        "ans": "u u r r"
+    },
+    {
+        "name": "Лабиринт стен (Стены)",
+        "type": "sequence",
+        "grid": [10, 8],
+        "start": [1, 1],
+        "ans": "d d r r u u r r d d",
+        "walls": [
+            [[1, 1], "right", "both"],
+            [[1, 2], "right", "both"],
+            [[3, 3], "left", "outer"],
+            [[4, 2], "down", "both"]
+        ],
+        "hint": "Зеленые стены просто преграждают путь"
+    },
+    {
+        "name": "Смертельный коридор (Яд)",
+        "type": "sequence",
+        "grid": [10, 8],
+        "start": [0, 4],
+        "ans": "r r r r r r r r",
+        "poison": [
+            [[2, 4], "up", "outer"],
+            [[2, 4], "down", "outer"],
+            [[4, 4], "up", "outer"],
+            [[4, 4], "down", "outer"],
+            [[6, 4], "right", "both"]
+        ],
+        "hint": "Красные линии смертельны. Если коснуться - рестарт!"
+    },
+    {
+        "name": "Квадрат",
+        "type": "sequence",
+        "grid": [16, 12],
+        "start": [7, 5],
+        "ans": "l l u u r r d d"
+    },
+    {
+        "name": "Угловая задача",
+        "type": "condition",
+        "grid": [12, 10],
+        "start": [5, 5],
+        "conditions": [
+            {
+                "check": "cell_has_steps",
+                "cells": "corners",
+                "match": "any",
+                "required_steps": [11]
+            }
+        ],
+        "hint": "Доберитесь до любого угла ровно за 11 шагов"
+    },
+    {
+    "name": "Марш-бросок на 9,8",
+    "type": "condition",
+    "grid": [16, 12],
+    "start": [2, 2],
+    "conditions": [
+      {
+        "check": "total_steps",
+        "count": 13,
+        "operator": "==",
+        "hint": "Сделайте ровно 13 шагов"
+      },
+      {
+        "check": "end_at",
+        "cells": [[9, 8]],
+        "hint": "Закончите путь в 9,8"
+      }
+    ],
+    "hint": "Кратчайший путь до 9,8 занимает ровно 13 шагов. Не сворачивайте!",
+    "poison": [
+        [[5, 5], "up", "outer"],
+        [[6, 6], "down", "outer"]
+    ]
+  }
+]
