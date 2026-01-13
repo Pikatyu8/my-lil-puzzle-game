@@ -14,12 +14,16 @@ COLOR_DEV_COORDS = (255, 165, 0)
 COLOR_CONDITION_HINT = (40, 60, 40)
 
 # Новые цвета
-COLOR_POISON = (255, 50, 50)     # Красный (смерть)
-COLOR_WALL = (128, 255, 176)     # #80FFB0 (блокада)
+COLOR_POISON = (255, 50, 50)
+COLOR_WALL = (128, 255, 176)
+COLOR_REQUIREMENT = (100, 180, 255)
+COLOR_REQUIREMENT_AVOID = (255, 100, 100)
+COLOR_REQUIREMENT_END = (100, 255, 100)
+COLOR_GLOBAL_REQ = (255, 220, 100)  # Жёлтый для глобальных условий
 
 # Глобальные переменные
 dev_recording = []
-path_positions = []  # Теперь глобально, чтобы видеть из консоли
+path_positions = []
 game_running = True
 dev_access_granted = False
 dev_show_coords = False
@@ -62,7 +66,6 @@ def load_levels():
                     if "cells" in cond and isinstance(cond["cells"], list):
                         cond["cells"] = [tuple(c) for c in cond["cells"]]
             
-            # Обработка списков барьеров (poison и walls)
             for key in ["poison", "walls"]:
                 if key in lvl:
                     processed = []
@@ -82,7 +85,8 @@ LEVELS = load_levels()
 # =============================================================================
 
 def resolve_cells(cells_spec, grid_cols, grid_rows):
-    if isinstance(cells_spec, list): return cells_spec
+    if isinstance(cells_spec, list): 
+        return [tuple(c) for c in cells_spec]  # <-- Конвертируем в кортежи
     if cells_spec == "corners":
         return [(0, 0), (grid_cols - 1, 0), (0, grid_rows - 1), (grid_cols - 1, grid_rows - 1)]
     elif cells_spec == "edges":
@@ -95,14 +99,140 @@ def resolve_cells(cells_spec, grid_cols, grid_rows):
     return []
 
 # =============================================================================
-# РАСШИРЕННАЯ ЛОГИКА УСЛОВИЙ (заменить существующие функции)
+# СИСТЕМА ТРЕБОВАНИЙ - ИЗВЛЕЧЕНИЕ ИЗ УСЛОВИЙ
+# =============================================================================
+
+def get_condition_requirements(level_data, grid_cols, grid_rows):
+    """
+    Извлекает требования из условий для отображения.
+    Возвращает: (cell_requirements, global_requirements)
+    - cell_requirements: {(x, y): [{"text": "...", "type": "..."}, ...]}
+    - global_requirements: [{"text": "...", "type": "..."}, ...]
+    """
+    if level_data.get("type") != "condition":
+        return {}, []
+    
+    requirements = {}
+    global_reqs = []
+    
+    def add_req(cell, text, req_type="normal"):
+        cell = tuple(cell)
+        if cell not in requirements:
+            requirements[cell] = []
+        requirements[cell].append({"text": str(text), "type": req_type})
+    
+    def add_global_req(text, req_type="global"):
+        global_reqs.append({"text": str(text), "type": req_type})
+    
+    def process_condition(cond):
+        check_type = cond.get("check", "")
+        
+        if check_type == "group":
+            for item in cond.get("items", []):
+                process_condition(item)
+            return
+        
+        cells = []
+        if "cells" in cond:
+            cells = resolve_cells(cond["cells"], grid_cols, grid_rows)
+        
+        # --- Обработка разных типов условий ---
+        
+        if check_type == "cell_has_steps":
+            required_steps = cond.get("required_steps", [])
+            for cell in cells:
+                for step in sorted(required_steps):
+                    add_req(cell, step, "step")
+        
+        elif check_type == "visit_order":
+            raw_cells = cond.get("cells", [])
+            if isinstance(raw_cells, list):
+                for i, cell in enumerate(raw_cells):
+                    add_req(tuple(cell), f"→{i+1}", "order")
+        
+        elif check_type == "first_visit_at_step":
+            step = cond.get("step", 0)
+            for cell in cells:
+                add_req(cell, f"@{step}", "step")
+        
+        elif check_type == "last_visit_at_step":
+            step = cond.get("step", 0)
+            for cell in cells:
+                add_req(cell, f"${step}", "step")
+        
+        elif check_type == "reach_before_step":
+            step = cond.get("step", 0)
+            for cell in cells:
+                add_req(cell, f"<{step}", "step")
+        
+        elif check_type == "reach_after_step":
+            step = cond.get("step", 0)
+            for cell in cells:
+                add_req(cell, f"≥{step}", "step")
+        
+        elif check_type == "visit_count":
+            count = cond.get("count", 1)
+            op = cond.get("operator", "==")
+            op_symbols = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<"}
+            symbol = op_symbols.get(op, op)
+            for cell in cells:
+                add_req(cell, f"x{symbol}{count}", "count")
+        
+        elif check_type == "consecutive_visits":
+            count = cond.get("count", 2)
+            for cell in cells:
+                add_req(cell, f"⟳{count}", "count")
+        
+        elif check_type == "avoid_cells":
+            for cell in cells:
+                add_req(cell, "✕", "avoid")
+        
+        elif check_type == "end_at":
+            for cell in cells:
+                add_req(cell, "◎", "end")
+        
+        elif check_type == "visit_cells":
+            for cell in cells:
+                add_req(cell, "•", "visit")
+        
+        elif check_type == "no_revisit":
+            exceptions = resolve_cells(cond.get("except", []), grid_cols, grid_rows)
+            for cell in exceptions:
+                add_req(cell, "∞", "special")
+            if not exceptions:
+                add_global_req("Без повторов", "global")
+            else:
+                add_global_req(f"Без повторов (кроме {len(exceptions)})", "global")
+        
+        elif check_type == "path_length_to_cell":
+            count = cond.get("count", 0)
+            op = cond.get("operator", "==")
+            op_symbols = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<"}
+            symbol = op_symbols.get(op, op)
+            for cell in cells:
+                add_req(cell, f"L{symbol}{count}", "step")
+        
+        # === Глобальные условия ===
+        elif check_type == "total_steps":
+            count = cond.get("count", 0)
+            op = cond.get("operator", "==")
+            op_symbols = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<", "!=": "≠"}
+            symbol = op_symbols.get(op, "=")
+            add_global_req(f"Шагов: {symbol}{count}", "steps")
+    
+    for cond in level_data.get("conditions", []):
+        process_condition(cond)
+    
+    return requirements, global_reqs
+
+
+# =============================================================================
+# РАСШИРЕННАЯ ЛОГИКА УСЛОВИЙ
 # =============================================================================
 
 def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows):
-    """Расширенная проверка условий с поддержкой новых типов"""
     check_type = condition.get("check", "")
     
-    # --- ГРУППА УСЛОВИЙ С ЛОГИКОЙ ---
     if check_type == "group":
         logic = condition.get("logic", "AND").upper()
         items = condition.get("items", [])
@@ -112,12 +242,10 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
         elif logic == "OR":
             return any(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
         elif logic == "NOT":
-            # NOT применяется к первому элементу
             if items:
                 return not check_condition(items[0], path_positions, player_pos, grid_cols, grid_rows)
             return True
         elif logic == "XOR":
-            # Ровно одно условие должно быть истинным
             true_count = sum(1 for item in items if check_condition(item, path_positions, player_pos, grid_cols, grid_rows))
             return true_count == 1
         elif logic == "NAND":
@@ -126,7 +254,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return not any(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
         return False
 
-    # --- СУЩЕСТВУЮЩИЕ ПРОВЕРКИ ---
     if check_type == "cell_has_steps":
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         match_mode = condition.get("match", "any")
@@ -142,7 +269,7 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
                 if cell in cell_steps and required_steps.issubset(cell_steps[cell]):
                     return True
             return False
-        else:  # all
+        else:
             for cell in cells:
                 if cell not in cell_steps or not required_steps.issubset(cell_steps[cell]):
                     return False
@@ -161,7 +288,7 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
     elif check_type == "total_steps":
         required = condition.get("count", 0)
         operator = condition.get("operator", "==")
-        actual = len(path_positions) - 1  # -1 потому что старт не считается шагом
+        actual = len(path_positions) - 1
         
         ops = {
             "==": lambda a, b: a == b,
@@ -177,17 +304,12 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         return tuple(player_pos) in cells
 
-    # --- НОВЫЕ ТИПЫ ПРОВЕРОК ---
-    
     elif check_type == "avoid_cells":
-        """Проверка: НЕ посещать указанные клетки"""
         cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
         visited = set(path_positions)
-        # Успех если пересечение пустое
         return len(visited & cells) == 0
 
     elif check_type == "visit_count":
-        """Проверка: посетить клетку ровно/мин/макс N раз"""
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         required = condition.get("count", 1)
         operator = condition.get("operator", "==")
@@ -212,15 +334,12 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return all(op_func(visit_counts.get(cell, 0), required) for cell in cells)
 
     elif check_type == "visit_order":
-        """Проверка: посетить клетки в определённом порядке"""
         cells = [tuple(c) for c in condition["cells"]]
-        # Находим первое посещение каждой клетки
         first_visit = {}
         for step, pos in enumerate(path_positions):
             if pos not in first_visit:
                 first_visit[pos] = step
         
-        # Проверяем что все клетки посещены и в правильном порядке
         prev_step = -1
         for cell in cells:
             if cell not in first_visit:
@@ -231,7 +350,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
         return True
 
     elif check_type == "reach_before_step":
-        """Проверка: достичь клетки до определённого шага"""
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         max_step = condition.get("step", 999)
         match_mode = condition.get("match", "any")
@@ -247,7 +365,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return all(first_visit.get(cell, 9999) < max_step for cell in cells)
 
     elif check_type == "reach_after_step":
-        """Проверка: достичь клетки НЕ РАНЬШЕ определённого шага"""
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         min_step = condition.get("step", 0)
         match_mode = condition.get("match", "any")
@@ -263,7 +380,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return all(first_visit.get(cell, 9999) >= min_step for cell in cells)
 
     elif check_type == "first_visit_at_step":
-        """Проверка: первый раз посетить клетку именно на шаге N"""
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         target_step = condition.get("step", 0)
         match_mode = condition.get("match", "any")
@@ -279,7 +395,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return all(first_visit.get(cell, -1) == target_step for cell in cells)
 
     elif check_type == "last_visit_at_step":
-        """Проверка: последний раз посетить клетку на шаге N"""
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         target_step = condition.get("step", 0)
         match_mode = condition.get("match", "any")
@@ -294,7 +409,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return all(last_visit.get(cell, -1) == target_step for cell in cells)
 
     elif check_type == "path_length_to_cell":
-        """Проверка: количество шагов до первого достижения клетки"""
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         required = condition.get("count", 0)
         operator = condition.get("operator", "==")
@@ -320,7 +434,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return all(op_func(first_visit.get(cell, 9999), required) for cell in cells)
 
     elif check_type == "consecutive_visits":
-        """Проверка: посетить клетку N раз подряд"""
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         required = condition.get("count", 2)
         match_mode = condition.get("match", "any")
@@ -342,7 +455,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
             return all(max_consecutive(cell) >= required for cell in cells)
 
     elif check_type == "no_revisit":
-        """Проверка: не посещать одну клетку дважды (кроме указанных исключений)"""
         exceptions = set(resolve_cells(condition.get("except", []), grid_cols, grid_rows))
         
         visit_counts = {}
@@ -358,7 +470,6 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
 
 
 def check_all_conditions(conditions, path_positions, player_pos, grid_cols, grid_rows):
-    """Проверка всех условий верхнего уровня (по умолчанию AND)"""
     for cond in conditions:
         if not check_condition(cond, path_positions, player_pos, grid_cols, grid_rows):
             return False
@@ -367,12 +478,19 @@ def check_all_conditions(conditions, path_positions, player_pos, grid_cols, grid
 def get_condition_cells(level_data, grid_cols, grid_rows):
     if level_data.get("type") != "condition": return []
     cells = set()
-    for cond in level_data.get("conditions", []):
+    
+    def extract_cells(cond):
         if "cells" in cond:
             cells.update(resolve_cells(cond["cells"], grid_cols, grid_rows))
+        if cond.get("check") == "group":
+            for item in cond.get("items", []):
+                extract_cells(item)
+    
+    for cond in level_data.get("conditions", []):
+        extract_cells(cond)
     return list(cells)
 
-# --- ЛОГИКА БАРЬЕРОВ (Стены и Яд) ---
+# --- ЛОГИКА БАРЬЕРОВ ---
 
 def is_path_clear(current_pos, next_pos, barriers_data):
     if not barriers_data:
@@ -391,12 +509,10 @@ def is_path_clear(current_pos, next_pos, barriers_data):
     entry_side = opposite_dir.get(move_dir)
 
     for b_pos, b_side, b_type in barriers_data:
-        # 1. Проверка ВЫХОДА из текущей клетки
         if tuple(current_pos) == b_pos and b_side == move_dir:
             if b_type in ["inner", "both"]:
                 return False
 
-        # 2. Проверка ВХОДА в следующую клетку
         if tuple(next_pos) == b_pos and b_side == entry_side:
             if b_type in ["outer", "both"]:
                 return False
@@ -446,6 +562,95 @@ def draw_barriers(surface, barriers_data, color, cell_size):
             
             pygame.draw.polygon(surface, color, [p1, p2, p3])
 
+
+def draw_requirements(surface, requirements, cell_size, font):
+    """Отрисовка требований: геометрические фигуры для иконок, текст для цифр"""
+    for pos, reqs in requirements.items():
+        x, y = pos
+        base_x = x * cell_size
+        base_y = y * cell_size
+        
+        # Полупрозрачный фон
+        overlay = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 100))
+        surface.blit(overlay, (base_x, base_y))
+        
+        # Разбиваем клетку на сетку 3x3 для мини-иконок
+        mini_size = cell_size // 3
+        
+        for i, req in enumerate(reqs[:9]):
+            text = req["text"]
+            req_type = req["type"]
+            
+            # Координаты мини-ячейки
+            col = i % 3
+            row = i // 3
+            center_x = base_x + col * mini_size + mini_size // 2
+            center_y = base_y + row * mini_size + mini_size // 2
+            radius = int(mini_size * 0.35)
+
+            # === РИСОВАНИЕ ФИГУР ВМЕСТО ТЕКСТА ===
+            
+            if req_type == "avoid":
+                # Красный крестик
+                color = COLOR_REQUIREMENT_AVOID
+                offset = int(radius * 0.8)
+                pygame.draw.line(surface, color, (center_x - offset, center_y - offset), (center_x + offset, center_y + offset), 2)
+                pygame.draw.line(surface, color, (center_x + offset, center_y - offset), (center_x - offset, center_y + offset), 2)
+                
+            elif req_type == "end":
+                # Зеленая мишень (круг в круге)
+                color = COLOR_REQUIREMENT_END
+                pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
+                pygame.draw.circle(surface, color, (center_x, center_y), radius // 2)
+                
+            elif req_type == "visit":
+                # Желтая сплошная точка
+                color = (255, 255, 100)
+                pygame.draw.circle(surface, color, (center_x, center_y), radius)
+                
+            else:
+                # Для цифр и шагов оставляем текст
+                if req_type in ("step", "order"):
+                    color = COLOR_REQUIREMENT
+                else:
+                    color = (200, 200, 100)
+                
+                txt_surf = font.render(text, True, color)
+                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
+                surface.blit(txt_surf, txt_rect)
+
+def draw_global_requirements(surface, global_reqs, font, screen_width):
+    """Отрисовка глобальных требований в верхнем правом углу"""
+    if not global_reqs:
+        return
+    
+    padding = 10
+    y_offset = padding
+    
+    for req in global_reqs:
+        text = req["text"]
+        req_type = req["type"]
+        
+        if req_type == "steps":
+            color = COLOR_GLOBAL_REQ
+        else:
+            color = (200, 200, 200)
+        
+        txt_surf = font.render(text, True, color)
+        txt_rect = txt_surf.get_rect()
+        txt_rect.topright = (screen_width - padding, y_offset)
+        
+        # Фон для читаемости
+        bg_rect = txt_rect.inflate(10, 6)
+        bg_rect.topright = (screen_width - padding + 5, y_offset - 3)
+        pygame.draw.rect(surface, (20, 20, 20), bg_rect)
+        pygame.draw.rect(surface, color, bg_rect, 1)
+        
+        surface.blit(txt_surf, txt_rect)
+        y_offset += txt_rect.height + 10
+
+
 def calculate_target_pos(start_pos, ans_str, grid_cols, grid_rows):
     x, y = start_pos
     mapping = {"u": (0, -1), "d": (0, 1), "l": (-1, 0), "r": (1, 0)}
@@ -488,14 +693,12 @@ def console_listener():
                 dev_show_coords = not dev_show_coords
                 print(f"[INFO] Координаты: {'ВКЛ' if dev_show_coords else 'ВЫКЛ'}\n")
             elif cmd_clean == '4' or cmd_clean == 'cells':
-                # Вывод: (x, y): [step1, step2, ...]
                 cell_map = {}
                 for step, pos in enumerate(path_positions):
                     if pos not in cell_map: cell_map[pos] = []
                     cell_map[pos].append(step)
                 
                 print("\n=== ДАННЫЕ ПО КЛЕТКАМ ===")
-                # Сортировка по Y, затем по X для удобства чтения
                 sorted_cells = sorted(cell_map.keys(), key=lambda k: (k[1], k[0]))
                 for cell in sorted_cells:
                     print(f"{cell[0]},{cell[1]}: {cell_map[cell]}")
@@ -529,7 +732,7 @@ def run_game(selected_idx, hints_enabled):
     player_pos = [0, 0]
     required_sequence = []
     player_history = []
-    path_positions = [] # Инициализация
+    path_positions = []
     target_grid_pos = None
     level_type = "sequence"
     level_conditions = []
@@ -537,6 +740,11 @@ def run_game(selected_idx, hints_enabled):
     
     poison_data = [] 
     walls_data = []
+    
+    # === Режим отображения требований ===
+    show_requirements = True
+    level_requirements = {}      # <-- Требования по клеткам
+    global_requirements = []     # <-- Глобальные требования (NEW!)
 
     console_thread = threading.Thread(target=console_listener, daemon=True)
     console_thread.start()
@@ -544,6 +752,7 @@ def run_game(selected_idx, hints_enabled):
     def load_level_data(idx):
         nonlocal player_pos, required_sequence, player_history, target_grid_pos
         nonlocal level_type, level_conditions, condition_cells, poison_data, walls_data, screen
+        nonlocal show_requirements, level_requirements, global_requirements  # <-- Добавлено
         global dev_recording, path_positions
         global WINDOW_WIDTH, WINDOW_HEIGHT, CELL_SIZE, GRID_COLS, GRID_ROWS
 
@@ -562,10 +771,14 @@ def run_game(selected_idx, hints_enabled):
         player_pos = list(start)
         player_history = []
         dev_recording.clear()
-        path_positions = [tuple(player_pos)] # Сброс и добавление старта
+        path_positions = [tuple(player_pos)]
         
         poison_data = level_data.get("poison", [])
         walls_data = level_data.get("walls", [])
+        
+        # === Получаем ОБА типа требований ===
+        show_requirements = True
+        level_requirements, global_requirements = get_condition_requirements(level_data, GRID_COLS, GRID_ROWS)
         
         if level_type == "sequence":
             required_sequence = normalize_ans(level_data.get("ans", ""))
@@ -583,16 +796,19 @@ def run_game(selected_idx, hints_enabled):
         
         print(f"\n{'='*50}\n--- {name} ---\nТип: {level_type}")
         if hints_enabled and "hint" in level_data: print(f"Подсказка: {level_data['hint']}")
-        if walls_data: print(f"Стены (зеленые): {len(walls_data)}")
+        if walls_data: print(f"Стены (зелёные): {len(walls_data)}")
         if poison_data: print(f"Яд (красные): {len(poison_data)}")
+        if level_requirements or global_requirements: 
+            print(f"[X] - показать/скрыть требования")
         print(f"{'='*50}\n")
 
     load_level_data(current_idx)
     
-    # Инициализация двух шрифтов
     font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
-    font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5)) # Чуть меньше для 3 цифр
+    font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
     font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
+    font_requirements = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+    font_global = pygame.font.SysFont("Arial", max(14, CELL_SIZE // 3), bold=True)  # <-- NEW
 
     while game_running:
         for event in pygame.event.get():
@@ -608,6 +824,15 @@ def run_game(selected_idx, hints_enabled):
                     font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
                     font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
                     font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
+                    font_requirements = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+                    font_global = pygame.font.SysFont("Arial", max(14, CELL_SIZE // 3), bold=True)
+                    continue
+                
+                # Переключение отображения требований
+                if event.key == pygame.K_x:
+                    show_requirements = not show_requirements
+                    status = "ВКЛ" if show_requirements else "ВЫКЛ"
+                    print(f"[INFO] Отображение требований: {status}")
                     continue
 
                 # --- ЛОГИКА ДВИЖЕНИЯ ---
@@ -620,42 +845,38 @@ def run_game(selected_idx, hints_enabled):
                 elif event.key == pygame.K_RIGHT: dx, dy = 1, 0;  move_attempt = "r"
 
                 if move_attempt:
+                    # Скрываем требования при первом шаге
+                    if show_requirements and len(path_positions) == 1:
+                        show_requirements = False
+                    
                     target_pos = [player_pos[0] + dx, player_pos[1] + dy]
                     
-                    # 1. Проверка границ
                     in_bounds = (0 <= target_pos[0] < GRID_COLS and 0 <= target_pos[1] < GRID_ROWS)
                     
-                    # 2. Проверка Стен (Зеленые)
                     blocked_by_wall = False
                     if in_bounds:
                         if not is_path_clear(player_pos, target_pos, walls_data):
                             blocked_by_wall = True
 
-                    # 3. Проверка Яда (Красные)
                     hit_poison = False
                     if in_bounds and not blocked_by_wall:
                         if not is_path_clear(player_pos, target_pos, poison_data):
                             hit_poison = True
                     
-                    # ЛОГИКА СМЕРТИ
                     if hit_poison:
                         print("☠ ВЫ ПОГИБЛИ! (Задели ядовитый барьер)")
                         load_level_data(current_idx)
                         continue
 
-                    # ЛОГИКА ПЕРЕМЕЩЕНИЯ
                     if not in_bounds or blocked_by_wall:
-                        # Стоим на месте, но считаем шаг
                         pass 
                     else:
                         player_pos = target_pos
 
-                    # ЗАПИСЬ ШАГА
                     player_history.append(move_attempt)
                     dev_recording.append(move_attempt)
                     path_positions.append(tuple(player_pos))
 
-                    # ПРОВЕРКА ПОБЕДЫ
                     level_complete = False
                     if level_type == "sequence":
                         if player_history == required_sequence: level_complete = True
@@ -673,6 +894,8 @@ def run_game(selected_idx, hints_enabled):
                             font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
                             font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
                             font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
+                            font_requirements = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+                            font_global = pygame.font.SysFont("Arial", max(14, CELL_SIZE // 3), bold=True)
                         else:
                             print("\n🎉 ВЫ ПРОШЛИ ВСЮ ИГРУ! 🎉")
                             game_running = False
@@ -686,19 +909,27 @@ def run_game(selected_idx, hints_enabled):
             for cell in condition_cells:
                 pygame.draw.rect(screen, COLOR_CONDITION_HINT, (cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE))
         
-        # Отрисовка шагов
-        cell_data = {}
-        for step_num, pos in enumerate(path_positions):
-            if pos not in cell_data: cell_data[pos] = []
-            if len(cell_data[pos]) < 9: cell_data[pos].append(step_num)
-        
-        for pos, steps in cell_data.items():
-            for i, val in enumerate(steps):
-                # Выбор шрифта: маленький для 3 цифр (>= 100), обычный для остальных
-                current_font = font_steps_small if val >= 100 else font_steps
-                
-                txt_surf = current_font.render(str(val), True, COLOR_TEXT)
-                screen.blit(txt_surf, (pos[0]*CELL_SIZE+2+(i%3)*(CELL_SIZE//3), pos[1]*CELL_SIZE+2+(i//3)*(CELL_SIZE//3)))
+        # === ОТРИСОВКА ТРЕБОВАНИЙ ИЛИ ШАГОВ ===
+        if show_requirements and (level_requirements or global_requirements):
+            # Режим отображения требований
+            if level_requirements:
+                draw_requirements(screen, level_requirements, CELL_SIZE, font_requirements)
+            
+            # === ВОТ ЭТО НОВОЕ: глобальные требования в правом верхнем углу ===
+            if global_requirements:
+                draw_global_requirements(screen, global_requirements, font_global, WINDOW_WIDTH)
+        else:
+            # Обычный режим - отображение шагов
+            cell_data = {}
+            for step_num, pos in enumerate(path_positions):
+                if pos not in cell_data: cell_data[pos] = []
+                if len(cell_data[pos]) < 9: cell_data[pos].append(step_num)
+            
+            for pos, steps in cell_data.items():
+                for i, val in enumerate(steps):
+                    current_font = font_steps_small if val >= 100 else font_steps
+                    txt_surf = current_font.render(str(val), True, COLOR_TEXT)
+                    screen.blit(txt_surf, (pos[0]*CELL_SIZE+2+(i%3)*(CELL_SIZE//3), pos[1]*CELL_SIZE+2+(i//3)*(CELL_SIZE//3)))
 
         draw_grid(screen, WINDOW_WIDTH, WINDOW_HEIGHT, CELL_SIZE)
         
