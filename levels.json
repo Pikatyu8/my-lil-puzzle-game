@@ -263,5 +263,100 @@
         {"check": "visit_cells", "cells": [[1, 2]], "match": "all"},
         {"check": "total_steps", "count": 12, "operator": "<="}
     ]
-  }
+  },
+  {
+        "name": "Хроно-Синхротрон",
+        "type": "condition",
+        "grid": [15, 13],
+        "start": [7, 6],
+        "hint": "Соблюдайте тайминги! Придете рано — ищите путь длиннее. Придете поздно — проиграете.",
+        "walls": [
+            [[7, 5], "up", "outer"], [[7, 7], "down", "outer"],
+            [[6, 6], "left", "outer"], [[8, 6], "right", "outer"],
+            
+            [[7, 2], "left", "both"], [[7, 2], "right", "both"], [[7, 2], "up", "inner"],
+            [[7, 10], "left", "both"], [[7, 10], "right", "both"], [[7, 10], "down", "inner"],
+            
+            [[3, 6], "up", "both"], [[3, 6], "down", "both"], [[3, 6], "left", "inner"],
+            [[11, 6], "up", "both"], [[11, 6], "down", "both"], [[11, 6], "right", "inner"],
+
+            [[2, 2], "down", "outer"], [[2, 2], "right", "outer"],
+            [[12, 2], "down", "outer"], [[12, 2], "left", "outer"],
+            [[12, 10], "up", "outer"], [[12, 10], "left", "outer"],
+            [[2, 10], "up", "outer"], [[2, 10], "right", "outer"]
+        ],
+        "poison": [
+            [[7, 3], "down", "inner"], [[7, 9], "up", "inner"],
+            [[4, 6], "right", "inner"], [[10, 6], "left", "inner"],
+            
+            [[1, 3], "right", "both"], [[13, 3], "left", "both"],
+            [[1, 9], "right", "both"], [[13, 9], "left", "both"],
+            
+            [[4, 1], "down", "both"], [[10, 1], "down", "both"],
+            [[4, 11], "up", "both"], [[10, 11], "up", "both"]
+        ],
+        "conditions": [
+            {
+                "check": "reach_after_step",
+                "cells": [[1, 1]],
+                "step": 10
+            },
+            {
+                "check": "reach_before_step",
+                "cells": [[1, 1]],
+                "step": 16
+            },
+            {
+                "check": "reach_after_step",
+                "cells": [[13, 1]],
+                "step": 24
+            },
+            {
+                "check": "reach_before_step",
+                "cells": [[13, 1]],
+                "step": 30
+            },
+            {
+                "check": "reach_after_step",
+                "cells": [[13, 11]],
+                "step": 38
+            },
+            {
+                "check": "reach_before_step",
+                "cells": [[13, 11]],
+                "step": 44
+            },
+            {
+                "check": "reach_after_step",
+                "cells": [[1, 11]],
+                "step": 52
+            },
+            {
+                "check": "reach_before_step",
+                "cells": [[1, 11]],
+                "step": 58
+            },
+            {
+                "check": "no_revisit",
+                "except": [[7, 6]]
+            },
+            {
+                "check": "end_at",
+                "cells": [[7, 6]]
+            }
+        ]
+    },
+    {
+        "name": "мой лвл",
+        "grid":[3,3],
+        "start":[0,0],
+        "type":"condition",
+        "hint":"пока что нет",
+        "poison":[
+            [[0,1],{"down":"inner","up":"inner","right":"inner","left":"inner"}]
+        ],
+        "conditions": [
+            {"check": "total_steps","count":500,"operator":"=="}
+        ]
+    }
 ]
