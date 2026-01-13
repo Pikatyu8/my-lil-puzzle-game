@@ -94,12 +94,44 @@ def resolve_cells(cells_spec, grid_cols, grid_rows):
         return [(grid_cols // 2, grid_rows // 2)]
     return []
 
+# =============================================================================
+# РАСШИРЕННАЯ ЛОГИКА УСЛОВИЙ (заменить существующие функции)
+# =============================================================================
+
 def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows):
+    """Расширенная проверка условий с поддержкой новых типов"""
     check_type = condition.get("check", "")
+    
+    # --- ГРУППА УСЛОВИЙ С ЛОГИКОЙ ---
+    if check_type == "group":
+        logic = condition.get("logic", "AND").upper()
+        items = condition.get("items", [])
+        
+        if logic == "AND":
+            return all(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
+        elif logic == "OR":
+            return any(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
+        elif logic == "NOT":
+            # NOT применяется к первому элементу
+            if items:
+                return not check_condition(items[0], path_positions, player_pos, grid_cols, grid_rows)
+            return True
+        elif logic == "XOR":
+            # Ровно одно условие должно быть истинным
+            true_count = sum(1 for item in items if check_condition(item, path_positions, player_pos, grid_cols, grid_rows))
+            return true_count == 1
+        elif logic == "NAND":
+            return not all(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
+        elif logic == "NOR":
+            return not any(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
+        return False
+
+    # --- СУЩЕСТВУЮЩИЕ ПРОВЕРКИ ---
     if check_type == "cell_has_steps":
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         match_mode = condition.get("match", "any")
         required_steps = set(condition.get("required_steps", []))
+        
         cell_steps = {}
         for step_num, pos in enumerate(path_positions):
             if pos not in cell_steps: cell_steps[pos] = set()
@@ -107,31 +139,226 @@ def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows)
         
         if match_mode == "any":
             for cell in cells:
-                if cell in cell_steps and required_steps.issubset(cell_steps[cell]): return True
+                if cell in cell_steps and required_steps.issubset(cell_steps[cell]):
+                    return True
             return False
-        else:
+        else:  # all
             for cell in cells:
-                if cell not in cell_steps or not required_steps.issubset(cell_steps[cell]): return False
+                if cell not in cell_steps or not required_steps.issubset(cell_steps[cell]):
+                    return False
             return True
+
     elif check_type == "visit_cells":
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         match_mode = condition.get("match", "any")
         visited = set(path_positions)
-        if match_mode == "any": return bool(visited & set(cells))
-        else: return set(cells).issubset(visited)
+        
+        if match_mode == "any":
+            return bool(visited & set(cells))
+        else:
+            return set(cells).issubset(visited)
+
     elif check_type == "total_steps":
         required = condition.get("count", 0)
         operator = condition.get("operator", "==")
-        actual = len(path_positions) - 1
-        ops = {"==": lambda a, b: a == b, ">=": lambda a, b: a >= b, 
-               "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, "<": lambda a, b: a < b}
+        actual = len(path_positions) - 1  # -1 потому что старт не считается шагом
+        
+        ops = {
+            "==": lambda a, b: a == b,
+            ">=": lambda a, b: a >= b,
+            "<=": lambda a, b: a <= b,
+            ">": lambda a, b: a > b,
+            "<": lambda a, b: a < b,
+            "!=": lambda a, b: a != b
+        }
         return ops.get(operator, lambda a, b: False)(actual, required)
+
     elif check_type == "end_at":
         cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
         return tuple(player_pos) in cells
+
+    # --- НОВЫЕ ТИПЫ ПРОВЕРОК ---
+    
+    elif check_type == "avoid_cells":
+        """Проверка: НЕ посещать указанные клетки"""
+        cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
+        visited = set(path_positions)
+        # Успех если пересечение пустое
+        return len(visited & cells) == 0
+
+    elif check_type == "visit_count":
+        """Проверка: посетить клетку ровно/мин/макс N раз"""
+        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
+        required = condition.get("count", 1)
+        operator = condition.get("operator", "==")
+        match_mode = condition.get("match", "any")
+        
+        ops = {
+            "==": lambda a, b: a == b,
+            ">=": lambda a, b: a >= b,
+            "<=": lambda a, b: a <= b,
+            ">": lambda a, b: a > b,
+            "<": lambda a, b: a < b
+        }
+        op_func = ops.get(operator, lambda a, b: a == b)
+        
+        visit_counts = {}
+        for pos in path_positions:
+            visit_counts[pos] = visit_counts.get(pos, 0) + 1
+        
+        if match_mode == "any":
+            return any(op_func(visit_counts.get(cell, 0), required) for cell in cells)
+        else:
+            return all(op_func(visit_counts.get(cell, 0), required) for cell in cells)
+
+    elif check_type == "visit_order":
+        """Проверка: посетить клетки в определённом порядке"""
+        cells = [tuple(c) for c in condition["cells"]]
+        # Находим первое посещение каждой клетки
+        first_visit = {}
+        for step, pos in enumerate(path_positions):
+            if pos not in first_visit:
+                first_visit[pos] = step
+        
+        # Проверяем что все клетки посещены и в правильном порядке
+        prev_step = -1
+        for cell in cells:
+            if cell not in first_visit:
+                return False
+            if first_visit[cell] <= prev_step:
+                return False
+            prev_step = first_visit[cell]
+        return True
+
+    elif check_type == "reach_before_step":
+        """Проверка: достичь клетки до определённого шага"""
+        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
+        max_step = condition.get("step", 999)
+        match_mode = condition.get("match", "any")
+        
+        first_visit = {}
+        for step, pos in enumerate(path_positions):
+            if pos not in first_visit:
+                first_visit[pos] = step
+        
+        if match_mode == "any":
+            return any(first_visit.get(cell, 9999) < max_step for cell in cells)
+        else:
+            return all(first_visit.get(cell, 9999) < max_step for cell in cells)
+
+    elif check_type == "reach_after_step":
+        """Проверка: достичь клетки НЕ РАНЬШЕ определённого шага"""
+        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
+        min_step = condition.get("step", 0)
+        match_mode = condition.get("match", "any")
+        
+        first_visit = {}
+        for step, pos in enumerate(path_positions):
+            if pos not in first_visit:
+                first_visit[pos] = step
+        
+        if match_mode == "any":
+            return any(first_visit.get(cell, 9999) >= min_step for cell in cells)
+        else:
+            return all(first_visit.get(cell, 9999) >= min_step for cell in cells)
+
+    elif check_type == "first_visit_at_step":
+        """Проверка: первый раз посетить клетку именно на шаге N"""
+        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
+        target_step = condition.get("step", 0)
+        match_mode = condition.get("match", "any")
+        
+        first_visit = {}
+        for step, pos in enumerate(path_positions):
+            if pos not in first_visit:
+                first_visit[pos] = step
+        
+        if match_mode == "any":
+            return any(first_visit.get(cell, -1) == target_step for cell in cells)
+        else:
+            return all(first_visit.get(cell, -1) == target_step for cell in cells)
+
+    elif check_type == "last_visit_at_step":
+        """Проверка: последний раз посетить клетку на шаге N"""
+        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
+        target_step = condition.get("step", 0)
+        match_mode = condition.get("match", "any")
+        
+        last_visit = {}
+        for step, pos in enumerate(path_positions):
+            last_visit[pos] = step
+        
+        if match_mode == "any":
+            return any(last_visit.get(cell, -1) == target_step for cell in cells)
+        else:
+            return all(last_visit.get(cell, -1) == target_step for cell in cells)
+
+    elif check_type == "path_length_to_cell":
+        """Проверка: количество шагов до первого достижения клетки"""
+        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
+        required = condition.get("count", 0)
+        operator = condition.get("operator", "==")
+        match_mode = condition.get("match", "any")
+        
+        ops = {
+            "==": lambda a, b: a == b,
+            ">=": lambda a, b: a >= b,
+            "<=": lambda a, b: a <= b,
+            ">": lambda a, b: a > b,
+            "<": lambda a, b: a < b
+        }
+        op_func = ops.get(operator, lambda a, b: a == b)
+        
+        first_visit = {}
+        for step, pos in enumerate(path_positions):
+            if pos not in first_visit:
+                first_visit[pos] = step
+        
+        if match_mode == "any":
+            return any(op_func(first_visit.get(cell, 9999), required) for cell in cells)
+        else:
+            return all(op_func(first_visit.get(cell, 9999), required) for cell in cells)
+
+    elif check_type == "consecutive_visits":
+        """Проверка: посетить клетку N раз подряд"""
+        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
+        required = condition.get("count", 2)
+        match_mode = condition.get("match", "any")
+        
+        def max_consecutive(cell):
+            max_count = 0
+            current = 0
+            for pos in path_positions:
+                if pos == cell:
+                    current += 1
+                    max_count = max(max_count, current)
+                else:
+                    current = 0
+            return max_count
+        
+        if match_mode == "any":
+            return any(max_consecutive(cell) >= required for cell in cells)
+        else:
+            return all(max_consecutive(cell) >= required for cell in cells)
+
+    elif check_type == "no_revisit":
+        """Проверка: не посещать одну клетку дважды (кроме указанных исключений)"""
+        exceptions = set(resolve_cells(condition.get("except", []), grid_cols, grid_rows))
+        
+        visit_counts = {}
+        for pos in path_positions:
+            visit_counts[pos] = visit_counts.get(pos, 0) + 1
+        
+        for pos, count in visit_counts.items():
+            if count > 1 and pos not in exceptions:
+                return False
+        return True
+
     return False
 
+
 def check_all_conditions(conditions, path_positions, player_pos, grid_cols, grid_rows):
+    """Проверка всех условий верхнего уровня (по умолчанию AND)"""
     for cond in conditions:
         if not check_condition(cond, path_positions, player_pos, grid_cols, grid_rows):
             return False
