@@ -149,16 +149,9 @@ def get_condition_requirements(level_data, grid_cols, grid_rows):
             raw_cells = cond.get("cells", [])
             if isinstance(raw_cells, list):
                 for i, cell in enumerate(raw_cells):
-                    # Было: add_req(tuple(cell), f"→{i+1}", "order")
-                    # Стало: более понятные символы
-                    ordinals = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"]
-                    if i < len(ordinals):
-                        symbol = ordinals[i]
-                    else:
-                        symbol = f"#{i+1}"
-                    add_req(tuple(cell), symbol, "order")
+                    # ИСПРАВЛЕНИЕ: Передаем обычную цифру, отрисовка будет в draw_requirements
+                    add_req(tuple(cell), str(i+1), "order")
 
-        
         elif check_type == "first_visit_at_step":
             step = cond.get("step", 0)
             for cell in cells:
@@ -618,14 +611,27 @@ def draw_requirements(surface, requirements, cell_size, font):
                 color = (255, 255, 100)
                 pygame.draw.circle(surface, color, (center_x, center_y), radius)
 
-            # === НОВОЕ: ОТРИСОВКА ПОВТОРА (⟳) ===
+            # === ИСПРАВЛЕНИЕ ДЛЯ ПОРЯДКА (вместо ①) ===
+            elif req_type == "order":
+                color = COLOR_REQUIREMENT
+                # Рисуем кружок (контур)
+                pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
+                
+                # Рисуем цифру внутри
+                # Используем шрифт поменьше, чтобы влезло в кружок
+                ord_font = pygame.font.SysFont("Arial", int(mini_size * 0.6), bold=True)
+                txt_surf = ord_font.render(text, True, color)
+                # Центрируем текст относительно центра мини-ячейки
+                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
+                surface.blit(txt_surf, txt_rect)
+
+            # === ОТРИСОВКА ПОВТОРА (⟳) ===
             elif "⟳" in text:
                 # Извлекаем число (например "⟳3" -> "3")
                 count_val = text.replace("⟳", "")
                 color = (255, 220, 100) # Золотистый цвет
 
                 # 1. Рисуем число по центру
-                # Используем шрифт поменьше, если цифра не влезает
                 req_font = font
                 if len(count_val) > 1:
                     req_font = pygame.font.SysFont("Arial", int(mini_size * 0.7), bold=True)
@@ -634,17 +640,11 @@ def draw_requirements(surface, requirements, cell_size, font):
                 txt_rect = txt_surf.get_rect(center=(center_x, center_y))
                 surface.blit(txt_surf, txt_rect)
 
-                # 2. Рисуем дугу (стрелку вокруг числа)
+                # 2. Рисуем дугу
                 arc_rect = pygame.Rect(center_x - radius, center_y - radius, radius * 2, radius * 2)
-                # Дуга от 0 до ~270 градусов (в радианах)
-                # start_angle и stop_angle в радианах. 0 - справа, идет против часовой (в обычной математике),
-                # но в Pygame координаты Y перевернуты, поэтому работает хитро.
-                # Рисуем "разомкнутый круг"
                 pygame.draw.arc(surface, color, arc_rect, 0.5, 5.8, 2)
 
-                # 3. Рисуем треугольник (наконечник стрелки)
-                # Координаты конца дуги (примерно, чтобы не считать синусы)
-                # Ставим стрелку справа сверху
+                # 3. Рисуем треугольник
                 tri_center = (center_x + radius, center_y)
                 p1 = (tri_center[0] - 3, tri_center[1] - 4)
                 p2 = (tri_center[0] + 3, tri_center[1] - 4)
