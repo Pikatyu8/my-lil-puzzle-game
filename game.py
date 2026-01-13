@@ -1,5 +1,6 @@
 import pygame
 import sys
+import math
 import threading
 import json
 import os
@@ -148,7 +149,15 @@ def get_condition_requirements(level_data, grid_cols, grid_rows):
             raw_cells = cond.get("cells", [])
             if isinstance(raw_cells, list):
                 for i, cell in enumerate(raw_cells):
-                    add_req(tuple(cell), f"→{i+1}", "order")
+                    # Было: add_req(tuple(cell), f"→{i+1}", "order")
+                    # Стало: более понятные символы
+                    ordinals = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"]
+                    if i < len(ordinals):
+                        symbol = ordinals[i]
+                    else:
+                        symbol = f"#{i+1}"
+                    add_req(tuple(cell), symbol, "order")
+
         
         elif check_type == "first_visit_at_step":
             step = cond.get("step", 0)
@@ -587,7 +596,7 @@ def draw_requirements(surface, requirements, cell_size, font):
             row = i // 3
             center_x = base_x + col * mini_size + mini_size // 2
             center_y = base_y + row * mini_size + mini_size // 2
-            radius = int(mini_size * 0.35)
+            radius = int(mini_size * 0.4) # Чуть увеличили радиус для удобства
 
             # === РИСОВАНИЕ ФИГУР ВМЕСТО ТЕКСТА ===
             
@@ -608,9 +617,42 @@ def draw_requirements(surface, requirements, cell_size, font):
                 # Желтая сплошная точка
                 color = (255, 255, 100)
                 pygame.draw.circle(surface, color, (center_x, center_y), radius)
+
+            # === НОВОЕ: ОТРИСОВКА ПОВТОРА (⟳) ===
+            elif "⟳" in text:
+                # Извлекаем число (например "⟳3" -> "3")
+                count_val = text.replace("⟳", "")
+                color = (255, 220, 100) # Золотистый цвет
+
+                # 1. Рисуем число по центру
+                # Используем шрифт поменьше, если цифра не влезает
+                req_font = font
+                if len(count_val) > 1:
+                    req_font = pygame.font.SysFont("Arial", int(mini_size * 0.7), bold=True)
+                
+                txt_surf = req_font.render(count_val, True, color)
+                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
+                surface.blit(txt_surf, txt_rect)
+
+                # 2. Рисуем дугу (стрелку вокруг числа)
+                arc_rect = pygame.Rect(center_x - radius, center_y - radius, radius * 2, radius * 2)
+                # Дуга от 0 до ~270 градусов (в радианах)
+                # start_angle и stop_angle в радианах. 0 - справа, идет против часовой (в обычной математике),
+                # но в Pygame координаты Y перевернуты, поэтому работает хитро.
+                # Рисуем "разомкнутый круг"
+                pygame.draw.arc(surface, color, arc_rect, 0.5, 5.8, 2)
+
+                # 3. Рисуем треугольник (наконечник стрелки)
+                # Координаты конца дуги (примерно, чтобы не считать синусы)
+                # Ставим стрелку справа сверху
+                tri_center = (center_x + radius, center_y)
+                p1 = (tri_center[0] - 3, tri_center[1] - 4)
+                p2 = (tri_center[0] + 3, tri_center[1] - 4)
+                p3 = (tri_center[0], tri_center[1] + 3)
+                pygame.draw.polygon(surface, color, [p1, p2, p3])
                 
             else:
-                # Для цифр и шагов оставляем текст
+                # Для остальных цифр и шагов оставляем текст
                 if req_type in ("step", "order"):
                     color = COLOR_REQUIREMENT
                 else:
@@ -853,29 +895,37 @@ def run_game(selected_idx, hints_enabled):
                     
                     in_bounds = (0 <= target_pos[0] < GRID_COLS and 0 <= target_pos[1] < GRID_ROWS)
                     
-                    blocked_by_wall = False
-                    if in_bounds:
-                        if not is_path_clear(player_pos, target_pos, walls_data):
-                            blocked_by_wall = True
-
+                    # ═══════════════════════════════════════════════════════════
+                    # СНАЧАЛА проверяем яд — смерть при ПОПЫТКЕ пройти через него
+                    # (даже если стена тоже блокирует эту линию)
+                    # ═══════════════════════════════════════════════════════════
                     hit_poison = False
-                    if in_bounds and not blocked_by_wall:
+                    if in_bounds:
                         if not is_path_clear(player_pos, target_pos, poison_data):
                             hit_poison = True
-                    
+
                     if hit_poison:
                         print("☠ ВЫ ПОГИБЛИ! (Задели ядовитый барьер)")
                         load_level_data(current_idx)
                         continue
 
+                    # ═══════════════════════════════════════════════════════════
+                    # ПОТОМ проверяем стены — блокировка без смерти
+                    # ═══════════════════════════════════════════════════════════
+                    blocked_by_wall = False
+                    if in_bounds:
+                        if not is_path_clear(player_pos, target_pos, walls_data):
+                            blocked_by_wall = True
+
                     if not in_bounds or blocked_by_wall:
-                        pass 
+                        pass  # Остаёмся на месте
                     else:
                         player_pos = target_pos
 
                     player_history.append(move_attempt)
                     dev_recording.append(move_attempt)
                     path_positions.append(tuple(player_pos))
+
 
                     level_complete = False
                     if level_type == "sequence":
