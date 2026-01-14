@@ -3,6 +3,7 @@ import sys
 import threading
 import json
 import os
+import savestates  # <--- НОВЫЙ МОДУЛЬ
 
 # --- ЦВЕТА ---
 COLOR_BG = (0, 0, 0)
@@ -29,6 +30,9 @@ game_running = True
 dev_access_granted = False
 dev_show_coords = False
 dev_disable_victory = False
+
+# --- ИЗМЕНЕНИЕ: Ширина боковой панели ---
+SIDE_PANEL_WIDTH = 250 
 
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
@@ -125,11 +129,26 @@ def load_levels_from_file(filename, is_internal=True):
         return None
 
 # =============================================================================
+# РАБОТА СО ШРИФТАМИ (Performance Fix)
+# =============================================================================
+_font_cache = {}
+
+def get_font(size, bold=False):
+    """Возвращает кэшированный шрифт, чтобы не убивать CPU."""
+    key = (size, bold)
+    if key not in _font_cache:
+        font_names = "segoeuisymbol, dejavusans, arialunicode, arial" 
+        try:
+            _font_cache[key] = pygame.font.SysFont(font_names, size, bold=bold)
+        except:
+            _font_cache[key] = pygame.font.SysFont("arial", size, bold=bold)
+    return _font_cache[key]
+
+# =============================================================================
 # УТИЛИТЫ
 # =============================================================================
 
 def resolve_cells(cells_spec, grid_cols, grid_rows):
-    """Преобразует спецификацию клеток в список координат."""
     if isinstance(cells_spec, list):
         return [tuple(c) for c in cells_spec]
     if cells_spec == "corners":
@@ -152,7 +171,6 @@ def is_prime(n):
     return True
 
 def eval_step_expr(expr, step):
-    """Вычисляет выражение для шага."""
     expr = expr.strip()
     if "|" in expr:
         return any(eval_step_expr(p.strip(), step) for p in expr.split("|"))
@@ -178,7 +196,6 @@ def eval_step_expr(expr, step):
     return False
 
 def parse_steps(condition, max_steps=500):
-    """Извлекает набор шагов из условия."""
     result = set()
     if "step_expr" in condition:
         for s in range(max_steps):
@@ -193,7 +210,6 @@ def parse_steps(condition, max_steps=500):
     return result
 
 def format_steps(condition):
-    """Форматирует шаги для отображения."""
     if "step_expr" in condition:
         expr = condition["step_expr"]
         for old, new in [("even", "2n"), ("odd", "2n+1"), ("prime", "P")]:
@@ -491,7 +507,10 @@ def draw_barriers(surface, barriers_data, color, cell_size):
                 pts = [(mid_x + dx, mid_y), (mid_x, mid_y - 4), (mid_x, mid_y + 4)]
             pygame.draw.polygon(surface, color, pts)
 
-def draw_requirements(surface, requirements, cell_size, base_font):
+def draw_requirements(surface, requirements, cell_size):
+    mini = cell_size // 3
+    font_size_base = int(mini * 0.65)
+    
     for pos, reqs in requirements.items():
         x, y = pos
         base_x, base_y = x * cell_size, y * cell_size
@@ -499,8 +518,6 @@ def draw_requirements(surface, requirements, cell_size, base_font):
         overlay = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 100))
         surface.blit(overlay, (base_x, base_y))
-        
-        mini = cell_size // 3
         
         for i, req in enumerate(reqs[:9]):
             text, req_type = req["text"], req["type"]
@@ -529,21 +546,13 @@ def draw_requirements(surface, requirements, cell_size, base_font):
             elif req_type == "consecutive":
                 arc_rect = pygame.Rect(cx - r, cy - r, r * 2, r * 2)
                 pygame.draw.arc(surface, color, arc_rect, 0.5, 5.8, 2)
-                f = pygame.font.SysFont("Arial", int(mini * 0.6), bold=True)
+                f = get_font(int(mini * 0.6), bold=True)
                 ts = f.render(text.replace("⟳", ""), True, color)
                 surface.blit(ts, ts.get_rect(center=(cx, cy)))
             else:
                 display_text = text
                 for prefix in ["⊘", "✓", "①", "$"]:
                     display_text = display_text.replace(prefix, "")
-                
-                font_size = int(mini * 0.6)
-                while font_size > 6:
-                    font = pygame.font.SysFont("Arial", font_size, bold=True)
-                    if font.size(display_text)[0] <= int(r * 1.6):
-                        break
-                    font_size -= 1
-                font = pygame.font.SysFont("Arial", font_size, bold=True)
                 
                 if req_type == "avoid_step":
                     pygame.draw.circle(surface, color, (cx, cy), r, 1)
@@ -553,17 +562,27 @@ def draw_requirements(surface, requirements, cell_size, base_font):
                 elif req_type == "order":
                     pygame.draw.circle(surface, color, (cx, cy), r, 1)
                 
+                current_font_size = font_size_base
+                if len(display_text) > 2: 
+                    current_font_size = int(mini * 0.45)
+                
+                font = get_font(current_font_size, bold=True)
                 ts = font.render(display_text, True, color)
                 surface.blit(ts, ts.get_rect(center=(cx, cy)))
 
-def draw_global_requirements(surface, global_reqs, font, screen_width):
+# --- ИЗМЕНЕНИЕ: Рисуем в боковой панели ---
+def draw_global_requirements(surface, global_reqs, font, panel_x_start):
     y = 10
     for req in global_reqs:
         color = COLOR_GLOBAL_REQ if req["type"] == "steps" else (200, 200, 200)
         ts = font.render(req["text"], True, color)
-        tr = ts.get_rect(topright=(screen_width - 10, y))
+        
+        # Размещаем текст слева внутри панели с отступом 10 пикселей
+        tr = ts.get_rect(topleft=(panel_x_start + 10, y))
+        
         bg = tr.inflate(10, 6)
-        bg.topright = (screen_width - 5, y - 3)
+        bg.topleft = (panel_x_start + 5, y - 3)
+        
         pygame.draw.rect(surface, (20, 20, 20), bg)
         pygame.draw.rect(surface, color, bg, 1)
         surface.blit(ts, tr)
@@ -656,6 +675,9 @@ def run_game(selected_idx, hints_enabled):
     show_requirements = True
     level_requirements = {}
     global_requirements = []
+    
+    # Инициализация менеджера сохранений
+    state_manager = savestates.StateManager(max_history=200)
 
     console_thread = threading.Thread(target=console_listener, daemon=True)
     console_thread.start()
@@ -671,13 +693,18 @@ def run_game(selected_idx, hints_enabled):
         lvl = LEVELS[idx]
         GRID_COLS, GRID_ROWS = lvl.get("grid", (16, 12))
         
-        max_w, max_h = screen_w * 0.85, screen_h * 0.85
-        CELL_SIZE = int(min(max_w // GRID_COLS, max_h // GRID_ROWS))
+        # Корректируем ширину для расчета CELL_SIZE (вычитаем панель)
+        available_w = (screen_w * 0.85) - SIDE_PANEL_WIDTH
+        max_h = screen_h * 0.85
+        
+        CELL_SIZE = int(min(available_w // GRID_COLS, max_h // GRID_ROWS))
         
         grid_w, grid_h = CELL_SIZE * GRID_COLS, CELL_SIZE * GRID_ROWS
         GRID_OFFSET_X = int(grid_w * 0.05)
         GRID_OFFSET_Y = int(grid_h * 0.05)
-        WINDOW_WIDTH = grid_w + GRID_OFFSET_X * 2
+        
+        # --- ИЗМЕНЕНИЕ: Добавляем ширину панели к окну ---
+        WINDOW_WIDTH = grid_w + GRID_OFFSET_X * 2 + SIDE_PANEL_WIDTH
         WINDOW_HEIGHT = grid_h + GRID_OFFSET_Y * 2
         
         screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -688,6 +715,9 @@ def run_game(selected_idx, hints_enabled):
         player_history = []
         dev_recording.clear()
         path_positions = [tuple(player_pos)]
+        
+        # Сброс истории при загрузке нового уровня
+        state_manager.reset()
         
         poison_data = lvl.get("poison", [])[:]
         walls_data = lvl.get("walls", [])[:]
@@ -748,6 +778,30 @@ def run_game(selected_idx, hints_enabled):
                 if event.key == pygame.K_x:
                     show_requirements = not show_requirements
                     continue
+                
+                # --- ИЗМЕНЕНИЕ: Savestates Binds ---
+                if event.key == pygame.K_s:
+                    state_manager.save_manual(player_pos, path_positions, player_history, dev_recording)
+                    continue
+
+                if event.key == pygame.K_l:
+                    data = state_manager.load_manual()
+                    if data:
+                        player_pos = data['pos']
+                        path_positions = data['path']
+                        player_history = data['hist']
+                        dev_recording = data['dev']
+                    continue
+
+                if event.key == pygame.K_z:
+                    data = state_manager.pop()
+                    if data:
+                        player_pos = data['pos']
+                        path_positions = data['path']
+                        player_history = data['hist']
+                        dev_recording = data['dev']
+                    continue
+                # -----------------------------------
 
                 dx, dy, move = 0, 0, None
                 if event.key == pygame.K_UP:    dx, dy, move = 0, -1, "u"
@@ -770,6 +824,9 @@ def run_game(selected_idx, hints_enabled):
                         continue
 
                     if in_bounds and not blocked:
+                        # --- ИЗМЕНЕНИЕ: Сохраняем состояние перед ходом ---
+                        state_manager.push(player_pos, path_positions, player_history, dev_recording)
+                        # --------------------------------------------------
                         player_pos = target
 
                     player_history.append(move)
@@ -804,20 +861,25 @@ def run_game(selected_idx, hints_enabled):
 
         screen.fill(COLOR_BG)
         game_surface.fill(COLOR_BG)
-        draw_grid(game_surface, GRID_COLS * CELL_SIZE, GRID_ROWS * CELL_SIZE, CELL_SIZE)
         
-        if level_type == "sequence" and target_grid_pos:
-            pygame.draw.rect(game_surface, COLOR_TARGET,
-                (target_grid_pos[0] * CELL_SIZE, target_grid_pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
-        
+        # --- 1. СНАЧАЛА ЦВЕТНЫЕ ФОНЫ ---
         if level_type == "condition":
             for cell in condition_cells:
                 pygame.draw.rect(game_surface, COLOR_CONDITION_HINT,
                     (cell[0] * CELL_SIZE, cell[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
+
+        if level_type == "sequence" and target_grid_pos:
+            pygame.draw.rect(game_surface, COLOR_TARGET,
+                (target_grid_pos[0] * CELL_SIZE, target_grid_pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
+
+        # --- 2. ЗАТЕМ СЕТКА ---
+        draw_grid(game_surface, GRID_COLS * CELL_SIZE, GRID_ROWS * CELL_SIZE, CELL_SIZE)
         
+        # --- 3. ЗАТЕМ СТЕНЫ И ЯД ---
         draw_barriers(game_surface, walls_data, COLOR_WALL, CELL_SIZE)
         draw_barriers(game_surface, poison_data, COLOR_POISON, CELL_SIZE)
 
+        # --- 4. ТЕКСТ ШАГОВ НА ПУТИ ---
         if not (show_requirements and (level_requirements or global_requirements)):
             cell_data = {}
             for step, pos in enumerate(path_positions):
@@ -825,29 +887,38 @@ def run_game(selected_idx, hints_enabled):
                 if len(cell_data[pos]) < 9: cell_data[pos].append(step)
             for pos, steps in cell_data.items():
                 for i, val in enumerate(steps):
-                    f = font_small if val >= 100 else font_steps
+                    f = get_font(max(8, CELL_SIZE // 7)) if val >= 100 else get_font(max(10, CELL_SIZE // 5))
                     ts = f.render(str(val), True, COLOR_TEXT)
                     game_surface.blit(ts, (pos[0] * CELL_SIZE + 2 + (i % 3) * (CELL_SIZE // 3),
                                            pos[1] * CELL_SIZE + 2 + (i // 3) * (CELL_SIZE // 3)))
 
+        # --- 5. ИГРОК ---
         px = player_pos[0] * CELL_SIZE + CELL_SIZE // 2
         py = player_pos[1] * CELL_SIZE + CELL_SIZE // 2
         pygame.draw.circle(game_surface, COLOR_PLAYER, (px, py), int(CELL_SIZE * 0.4))
 
+        # --- 6. ТРЕБОВАНИЯ (Поверх всего) ---
         if show_requirements and level_requirements:
-            draw_requirements(game_surface, level_requirements, CELL_SIZE, font_req)
+            draw_requirements(game_surface, level_requirements, CELL_SIZE)
 
+        # --- 7. DEV KOORDINATY ---
         if dev_show_coords:
+            f_coords = get_font(max(12, CELL_SIZE // 3), bold=True)
             for gy in range(GRID_ROWS):
                 for gx in range(GRID_COLS):
-                    ts = font_coords.render(f"{gx},{gy}", True, COLOR_DEV_COORDS)
+                    ts = f_coords.render(f"{gx},{gy}", True, COLOR_DEV_COORDS)
                     game_surface.blit(ts, ((gx + 1) * CELL_SIZE - ts.get_width() - 3,
                                            (gy + 1) * CELL_SIZE - ts.get_height() - 3))
 
+        # Отрисовка игрового поля
         screen.blit(game_surface, (GRID_OFFSET_X, GRID_OFFSET_Y))
 
+        # --- ИЗМЕНЕНИЕ: Глобальные требования теперь рисуются в панели справа ---
         if show_requirements and global_requirements:
-            draw_global_requirements(screen, global_requirements, font_req, WINDOW_WIDTH)
+            panel_x = WINDOW_WIDTH - SIDE_PANEL_WIDTH
+            draw_global_requirements(screen, global_requirements, 
+                                     get_font(max(12, CELL_SIZE // 4), bold=True), 
+                                     panel_x)
 
         pygame.display.flip()
         clock.tick(60)
