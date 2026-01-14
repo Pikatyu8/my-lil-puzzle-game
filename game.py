@@ -1,6 +1,5 @@
 import pygame
 import sys
-import math
 import threading
 import json
 import os
@@ -14,7 +13,6 @@ COLOR_TEXT = (150, 150, 150)
 COLOR_DEV_COORDS = (255, 165, 0)
 COLOR_CONDITION_HINT = (40, 60, 40)
 
-# Новые цвета
 COLOR_POISON = (255, 50, 50)
 COLOR_WALL = (128, 255, 176)
 COLOR_REQUIREMENT = (100, 180, 255)
@@ -22,7 +20,7 @@ COLOR_REQUIREMENT_AVOID = (255, 100, 100)
 COLOR_REQUIREMENT_END = (100, 255, 100)
 COLOR_GLOBAL_REQ = (255, 220, 100)
 COLOR_AVOID_STEP = (255, 80, 180)
-COLOR_REQUIREMENT_STEP = (100, 255, 150)
+COLOR_REQUIRE_STEP = (100, 255, 150)
 
 # Глобальные переменные
 dev_recording = []
@@ -32,22 +30,19 @@ dev_access_granted = False
 dev_show_coords = False
 dev_disable_victory = False
 
-# Динамические размеры (обновляются при загрузке уровня)
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
 CELL_SIZE = 50
 GRID_COLS = 16
 GRID_ROWS = 12
 
-# Будет заполнено при старте игры
 LEVELS = []
 
 # =============================================================================
-# РАБОТА С ФАЙЛАМИ И JSON
+# РАБОТА С ФАЙЛАМИ
 # =============================================================================
 
 def resource_path(relative_path):
-    """ Получает путь к ресурсу, работает для dev и для PyInstaller """
     try:
         base_path = sys._MEIPASS
     except Exception:
@@ -55,59 +50,87 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def process_level_data(data):
-    """ Обрабатывает "сырые" данные из JSON (преобразует списки в кортежи) """
+    """Обрабатывает данные уровней."""
+    SIDE_MAP = {
+        'u': 'up', 'd': 'down', 'l': 'left', 'r': 'right',
+        'up': 'up', 'down': 'down', 'left': 'left', 'right': 'right'
+    }
+
     for lvl in data:
         if "grid" in lvl: lvl["grid"] = tuple(lvl["grid"])
         if "start" in lvl: lvl["start"] = tuple(lvl["start"])
         
+        # Условия - только словари {"check": ..., "cells": ...}
         if "conditions" in lvl:
             for cond in lvl["conditions"]:
-                if "cells" in cond and isinstance(cond["cells"], list):
-                    cond["cells"] = [tuple(c) for c in cond["cells"]]
+                if "cells" in cond:
+                    c = cond["cells"]
+                    # [x, y] -> [(x, y)]
+                    if isinstance(c, list) and len(c) > 0 and isinstance(c[0], (int, float)):
+                        cond["cells"] = [tuple(c)]
+                    # [[x1,y1], [x2,y2]] -> [(x1,y1), (x2,y2)]
+                    elif isinstance(c, list):
+                        cond["cells"] = [tuple(item) for item in c]
         
+        # Стены и яд: [[coords], {"sides": "type"}]
         for key in ["poison", "walls"]:
             if key in lvl:
                 processed = []
                 for item in lvl[key]:
-                    coords = tuple(item[0])
-                    if len(item) == 3 and isinstance(item[1], str):
-                        processed.append((coords, item[1], item[2]))
+                    raw_target = item[0]
+                    sides_dict = item[1]
+                    
+                    # Определяем координаты
+                    if isinstance(raw_target[0], list):
+                        targets = [tuple(c) for c in raw_target]
                     else:
-                        for part in item[1:]:
-                            if isinstance(part, dict):
-                                for side, b_type in part.items():
-                                    processed.append((coords, side, b_type))
+                        targets = [tuple(raw_target)]
+                    
+                    # Обрабатываем стороны
+                    for sides_key, b_type in sides_dict.items():
+                        target_sides = []
+                        if sides_key in ["square", "all", "box"]:
+                            target_sides = ["up", "down", "left", "right"]
+                        elif sides_key in SIDE_MAP:
+                            target_sides = [SIDE_MAP[sides_key]]
+                        else:
+                            for char in sides_key:
+                                if char in SIDE_MAP:
+                                    target_sides.append(SIDE_MAP[char])
+                        
+                        for coords in targets:
+                            for s in target_sides:
+                                processed.append((coords, s, b_type))
+                    
                 lvl[key] = processed
     return data
 
 def load_levels_from_file(filename, is_internal=True):
-    """ Загружает уровни. Если is_internal=True, ищет внутри exe, иначе снаружи. """
     if is_internal:
         path = resource_path(filename)
-        source_desc = "ВНУТРЕННИЙ ФАЙЛ"
     else:
         path = os.path.abspath(filename)
-        source_desc = "ВНЕШНИЙ ФАЙЛ"
 
     if not os.path.exists(path):
-        print(f"[ERROR] Файл уровней не найден: {path} ({source_desc})")
+        print(f"[ERROR] Файл не найден: {path}")
         return None
 
     try:
-        print(f"[LOAD] Загрузка уровней из: {path}")
+        print(f"[LOAD] {path}")
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return process_level_data(data)
     except Exception as e:
-        print(f"[ERROR] Ошибка чтения JSON ({path}): {e}")
+        print(f"[ERROR] JSON: {e}")
         return None
 
 # =============================================================================
-# ЛОГИКА ИГРЫ И ПРОВЕРКИ
+# УТИЛИТЫ
 # =============================================================================
 
 def resolve_cells(cells_spec, grid_cols, grid_rows):
-    if isinstance(cells_spec, list): 
+    """Преобразует спецификацию клеток в список координат."""
+    if isinstance(cells_spec, list):
         return [tuple(c) for c in cells_spec]
     if cells_spec == "corners":
         return [(0, 0), (grid_cols - 1, 0), (0, grid_rows - 1), (grid_cols - 1, grid_rows - 1)]
@@ -120,36 +143,218 @@ def resolve_cells(cells_spec, grid_cols, grid_rows):
         return [(grid_cols // 2, grid_rows // 2)]
     return []
 
-def parse_step_constraint(condition):
-    forbidden_steps = set()
-    if "steps" in condition:
-        forbidden_steps = set(condition["steps"])
-    elif "step_range" in condition:
-        start, end = condition["step_range"]
-        forbidden_steps = set(range(start, end + 1))
-    elif "step" in condition:
-        forbidden_steps = {condition["step"]}
-    return forbidden_steps
+def is_prime(n):
+    if n < 2: return False
+    if n == 2: return True
+    if n % 2 == 0: return False
+    for i in range(3, int(n**0.5) + 1, 2):
+        if n % i == 0: return False
+    return True
 
-def format_step_constraint(condition):
+def eval_step_expr(expr, step):
+    """Вычисляет выражение для шага."""
+    expr = expr.strip()
+    if "|" in expr:
+        return any(eval_step_expr(p.strip(), step) for p in expr.split("|"))
+    if "&" in expr:
+        return all(eval_step_expr(p.strip(), step) for p in expr.split("&"))
+    if expr.startswith("!"):
+        return not eval_step_expr(expr[1:], step)
+    
+    if expr == "even": return step % 2 == 0
+    elif expr == "odd": return step % 2 == 1
+    elif expr == "prime": return is_prime(step)
+    elif expr.startswith("div:"): return step % int(expr.split(":")[1]) == 0
+    elif expr.startswith("mod:"):
+        parts = expr.split(":")
+        return step % int(parts[1]) == int(parts[2])
+    elif expr.startswith("range:"):
+        parts = expr.split(":")
+        return int(parts[1]) <= step <= int(parts[2])
+    elif expr.startswith("gt:"): return step > int(expr.split(":")[1])
+    elif expr.startswith("lt:"): return step < int(expr.split(":")[1])
+    elif expr.startswith("gte:"): return step >= int(expr.split(":")[1])
+    elif expr.startswith("lte:"): return step <= int(expr.split(":")[1])
+    return False
+
+def parse_steps(condition, max_steps=500):
+    """Извлекает набор шагов из условия."""
+    result = set()
+    if "step_expr" in condition:
+        for s in range(max_steps):
+            if eval_step_expr(condition["step_expr"], s):
+                result.add(s)
+        return result
+    if "step" in condition: result.add(condition["step"])
+    if "steps" in condition: result.update(condition["steps"])
+    if "step_range" in condition:
+        start, end = condition["step_range"]
+        result.update(range(start, end + 1))
+    return result
+
+def format_steps(condition):
+    """Форматирует шаги для отображения."""
+    if "step_expr" in condition:
+        expr = condition["step_expr"]
+        for old, new in [("even", "2n"), ("odd", "2n+1"), ("prime", "P")]:
+            expr = expr.replace(old, new)
+        return expr.replace("div:", "÷").replace("range:", "")
+    
+    parts = []
+    if "step" in condition: parts.append(str(condition["step"]))
     if "steps" in condition:
         steps = condition["steps"]
-        if len(steps) <= 3:
-            return ",".join(map(str, steps))
+        parts.append(",".join(map(str, steps)) if len(steps) <= 3 else f"{min(steps)}..{max(steps)}")
+    if "step_range" in condition:
+        s, e = condition["step_range"]
+        parts.append(f"{s}-{e}")
+    return ",".join(parts) if parts else "?"
+
+OPERATORS = {
+    "==": lambda a, b: a == b, ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b,
+    ">": lambda a, b: a > b, "<": lambda a, b: a < b, "!=": lambda a, b: a != b,
+    "=": lambda a, b: a == b,
+}
+OP_SYMBOLS = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<", "!=": "≠"}
+
+# =============================================================================
+# ПРОВЕРКА УСЛОВИЙ
+# =============================================================================
+
+def check_condition(cond, path, player_pos, cols, rows):
+    check = cond.get("check", "")
+    cells = resolve_cells(cond.get("cells", []), cols, rows)
+    match = cond.get("match", "all")
+    
+    if check == "group":
+        logic = cond.get("logic", "AND").upper()
+        items = cond.get("items", [])
+        results = [check_condition(item, path, player_pos, cols, rows) for item in items]
+        if logic == "AND": return all(results)
+        elif logic == "OR": return any(results)
+        elif logic == "NOT": return not results[0] if results else True
+        elif logic == "XOR": return sum(results) == 1
+        return False
+    
+    if check == "visit":
+        visit_counts = {}
+        for pos in path:
+            visit_counts[pos] = visit_counts.get(pos, 0) + 1
+        
+        if "min" in cond or "max" in cond:
+            min_c, max_c = cond.get("min", 0), cond.get("max", 999999)
+            if match == "any":
+                return any(min_c <= visit_counts.get(c, 0) <= max_c for c in cells)
+            return all(min_c <= visit_counts.get(c, 0) <= max_c for c in cells)
+        
+        count = cond.get("count", 1)
+        op_func = OPERATORS.get(cond.get("operator", ">="), OPERATORS[">="])
+        if match == "any":
+            return any(op_func(visit_counts.get(c, 0), count) for c in cells)
+        return all(op_func(visit_counts.get(c, 0), count) for c in cells)
+    
+    if check == "at_steps":
+        mode = cond.get("mode", "require")
+        cells_set = set(cells)
+        
+        if "step_expr" in cond:
+            expr = cond["step_expr"]
+            if mode == "avoid":
+                for i, pos in enumerate(path):
+                    if pos in cells_set and eval_step_expr(expr, i):
+                        return False
+                return True
+            else:
+                cell_valid = {c: False for c in cells}
+                for i, pos in enumerate(path):
+                    if pos in cells_set and eval_step_expr(expr, i):
+                        cell_valid[pos] = True
+                return any(cell_valid.values()) if match == "any" else all(cell_valid.get(c, False) for c in cells)
+        
+        target_steps = parse_steps(cond)
+        cell_steps = {}
+        for i, pos in enumerate(path):
+            if pos not in cell_steps: cell_steps[pos] = set()
+            cell_steps[pos].add(i)
+        
+        if mode == "avoid":
+            for i, pos in enumerate(path):
+                if pos in cells_set and i in target_steps:
+                    return False
+            return True
         else:
-            return f"{min(steps)}..{max(steps)}"
-    elif "step_range" in condition:
-        start, end = condition["step_range"]
-        return f"{start}-{end}"
-    elif "step" in condition:
-        return str(condition["step"])
-    return "?"
+            if match == "any":
+                return any(c in cell_steps and target_steps.issubset(cell_steps[c]) for c in cells)
+            return all(c in cell_steps and target_steps.issubset(cell_steps[c]) for c in cells)
+    
+    if check == "end_at":
+        return tuple(player_pos) in cells
+    
+    if check == "order":
+        first_visits = {}
+        for i, pos in enumerate(path):
+            if pos not in first_visits: first_visits[pos] = i
+        prev = -1
+        for c in cells:
+            if c not in first_visits or first_visits[c] <= prev:
+                return False
+            prev = first_visits[c]
+        return True
+    
+    if check == "consecutive":
+        count = cond.get("count", 2)
+        def max_consecutive(cell):
+            max_c = current = 0
+            for pos in path:
+                if pos == cell:
+                    current += 1
+                    max_c = max(max_c, current)
+                else:
+                    current = 0
+            return max_c
+        if match == "any":
+            return any(max_consecutive(c) >= count for c in cells)
+        return all(max_consecutive(c) >= count for c in cells)
+    
+    if check == "no_revisit":
+        exceptions = set(resolve_cells(cond.get("except", []), cols, rows))
+        visit_counts = {}
+        for pos in path:
+            visit_counts[pos] = visit_counts.get(pos, 0) + 1
+        for pos, cnt in visit_counts.items():
+            if cnt > 1 and pos not in exceptions:
+                return False
+        return True
+    
+    if check == "total_steps":
+        count = cond.get("count", 0)
+        op_func = OPERATORS.get(cond.get("operator", "=="), OPERATORS["=="])
+        return op_func(len(path) - 1, count)
+    
+    return False
+
+def check_all_conditions(conditions, path, player_pos, cols, rows):
+    return all(check_condition(c, path, player_pos, cols, rows) for c in conditions)
+
+def get_condition_cells(level_data, cols, rows):
+    if level_data.get("type") != "condition":
+        return []
+    cells = set()
+    def extract(cond):
+        if "cells" in cond:
+            cells.update(resolve_cells(cond["cells"], cols, rows))
+        if cond.get("check") == "group":
+            for item in cond.get("items", []):
+                extract(item)
+    for cond in level_data.get("conditions", []):
+        extract(cond)
+    return list(cells)
 
 # =============================================================================
 # СИСТЕМА ТРЕБОВАНИЙ
 # =============================================================================
 
-def get_condition_requirements(level_data, grid_cols, grid_rows):
+def get_condition_requirements(level_data, cols, rows):
     if level_data.get("type") != "condition":
         return {}, []
     
@@ -158,353 +363,68 @@ def get_condition_requirements(level_data, grid_cols, grid_rows):
     
     def add_req(cell, text, req_type="normal"):
         cell = tuple(cell)
-        if cell not in requirements:
-            requirements[cell] = []
+        if cell not in requirements: requirements[cell] = []
         requirements[cell].append({"text": str(text), "type": req_type})
     
-    def add_global_req(text, req_type="global"):
+    def add_global(text, req_type="global"):
         global_reqs.append({"text": str(text), "type": req_type})
     
-    def process_condition(cond):
-        check_type = cond.get("check", "")
+    def process(cond):
+        check = cond.get("check", "")
+        cells = resolve_cells(cond.get("cells", []), cols, rows)
         
-        if check_type == "group":
-            for item in cond.get("items", []):
-                process_condition(item)
+        if check == "group":
+            for item in cond.get("items", []): process(item)
             return
         
-        cells = []
-        if "cells" in cond:
-            cells = resolve_cells(cond["cells"], grid_cols, grid_rows)
-        
-        if check_type == "cell_has_steps":
-            required_steps = cond.get("required_steps", [])
-            for cell in cells:
-                for step in sorted(required_steps):
-                    add_req(cell, step, "step")
-        
-        elif check_type == "visit_order":
-            raw_cells = cond.get("cells", [])
-            if isinstance(raw_cells, list):
-                for i, cell in enumerate(raw_cells):
-                    add_req(tuple(cell), str(i+1), "order")
-
-        elif check_type == "first_visit_at_step":
-            step = cond.get("step", 0)
-            for cell in cells:
-                add_req(cell, f"@{step}", "step")
-        
-        elif check_type == "last_visit_at_step":
-            step = cond.get("step", 0)
-            for cell in cells:
-                add_req(cell, f"${step}", "step")
-        
-        elif check_type == "reach_before_step":
-            step = cond.get("step", 0)
-            for cell in cells:
-                add_req(cell, f"<{step}", "step")
-        
-        elif check_type == "reach_after_step":
-            step = cond.get("step", 0)
-            for cell in cells:
-                add_req(cell, f"≥{step}", "step")
-        
-        elif check_type == "visit_count":
-            count = cond.get("count", 1)
-            op = cond.get("operator", "==")
-            op_symbols = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<"}
-            symbol = op_symbols.get(op, op)
-            for cell in cells:
-                add_req(cell, f"x{symbol}{count}", "count")
-        
-        elif check_type == "consecutive_visits":
-            count = cond.get("count", 2)
-            for cell in cells:
-                add_req(cell, f"⟳{count}", "count")
-        
-        elif check_type == "avoid_cells":
-            for cell in cells:
-                add_req(cell, "✕", "avoid")
-        
-        elif check_type == "avoid_at_steps":
-            step_text = format_step_constraint(cond)
-            for cell in cells:
-                add_req(cell, f"⊘{step_text}", "avoid_step")
-        
-        elif check_type == "require_at_steps":
-            step_text = format_step_constraint(cond)
-            for cell in cells:
-                add_req(cell, f"✓{step_text}", "require_step")
-        
-        elif check_type == "end_at":
-            for cell in cells:
-                add_req(cell, "◎", "end")
-        
-        elif check_type == "visit_cells":
-            for cell in cells:
-                add_req(cell, "•", "visit")
-        
-        elif check_type == "no_revisit":
-            exceptions = resolve_cells(cond.get("except", []), grid_cols, grid_rows)
-            for cell in exceptions:
-                add_req(cell, "∞", "special")
-            if not exceptions:
-                add_global_req("Без повторов", "global")
+        if check == "visit":
+            if "min" in cond or "max" in cond:
+                min_c, max_c = cond.get("min", 0), cond.get("max", 999999)
+                text = f"≥{min_c}" if max_c >= 999999 else f"≤{max_c}" if min_c <= 0 else f"{min_c}-{max_c}"
+                for c in cells: add_req(c, f"×{text}", "count")
             else:
-                add_global_req(f"Без повторов (кроме {len(exceptions)})", "global")
+                count = cond.get("count", 1)
+                op = cond.get("operator", ">=")
+                if count == 0:
+                    for c in cells: add_req(c, "✕", "avoid")
+                elif count == 1 and op in (">=", "==", "="):
+                    for c in cells: add_req(c, "•", "visit")
+                else:
+                    for c in cells: add_req(c, f"×{OP_SYMBOLS.get(op, op)}{count}", "count")
         
-        elif check_type == "path_length_to_cell":
+        elif check == "at_steps":
+            step_text = format_steps(cond)
+            mode = cond.get("mode", "require")
+            for c in cells:
+                add_req(c, f"⊘{step_text}" if mode == "avoid" else f"✓{step_text}", 
+                       "avoid_step" if mode == "avoid" else "require_step")
+        
+        elif check == "end_at":
+            for c in cells: add_req(c, "◎", "end")
+        
+        elif check == "order":
+            for i, c in enumerate(cells): add_req(c, str(i + 1), "order")
+        
+        elif check == "consecutive":
+            for c in cells: add_req(c, f"⟳{cond.get('count', 2)}", "consecutive")
+        
+        elif check == "no_revisit":
+            exceptions = resolve_cells(cond.get("except", []), cols, rows)
+            for c in exceptions: add_req(c, "∞", "special")
+            add_global(f"Без повторов{f' (кроме {len(exceptions)})' if exceptions else ''}", "global")
+        
+        elif check == "total_steps":
             count = cond.get("count", 0)
-            op = cond.get("operator", "==")
-            op_symbols = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<"}
-            symbol = op_symbols.get(op, op)
-            for cell in cells:
-                add_req(cell, f"L{symbol}{count}", "step")
-        
-        elif check_type == "total_steps":
-            count = cond.get("count", 0)
-            op = cond.get("operator", "==")
-            op_symbols = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<", "!=": "≠"}
-            symbol = op_symbols.get(op, "=")
-            add_global_req(f"Шагов: {symbol}{count}", "steps")
-        
-        elif check_type == "visit_except_at_steps":
-            step_text = format_step_constraint(cond)
-            cells = resolve_cells(cond["cells"], grid_cols, grid_rows)
-            for cell in cells:
-                # Рисуем и "посетить", и "запрет на шагах"
-                add_req(cell, "•", "visit")
-                add_req(cell, f"⊘{step_text}", "avoid_step")
-
+            add_global(f"Шагов: {OP_SYMBOLS.get(cond.get('operator', '=='), '=')}{count}", "steps")
     
     for cond in level_data.get("conditions", []):
-        process_condition(cond)
+        process(cond)
     
     return requirements, global_reqs
 
 # =============================================================================
-# РАСШИРЕННАЯ ЛОГИКА УСЛОВИЙ
+# БАРЬЕРЫ
 # =============================================================================
-
-def check_condition(condition, path_positions, player_pos, grid_cols, grid_rows):
-    check_type = condition.get("check", "")
-    
-    if check_type == "group":
-        logic = condition.get("logic", "AND").upper()
-        items = condition.get("items", [])
-        
-        if logic == "AND":
-            return all(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
-        elif logic == "OR":
-            return any(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
-        elif logic == "NOT":
-            if items:
-                return not check_condition(items[0], path_positions, player_pos, grid_cols, grid_rows)
-            return True
-        elif logic == "XOR":
-            true_count = sum(1 for item in items if check_condition(item, path_positions, player_pos, grid_cols, grid_rows))
-            return true_count == 1
-        elif logic == "NAND":
-            return not all(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
-        elif logic == "NOR":
-            return not any(check_condition(item, path_positions, player_pos, grid_cols, grid_rows) for item in items)
-        return False
-
-    if check_type == "avoid_at_steps":
-        cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
-        forbidden_steps = parse_step_constraint(condition)
-        for step_num, pos in enumerate(path_positions):
-            if pos in cells and step_num in forbidden_steps:
-                return False
-        return True
-    
-    if check_type == "require_at_steps":
-        cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
-        required_steps = parse_step_constraint(condition)
-        match_mode = condition.get("match", "any")
-        steps_in_cells = set()
-        for step_num, pos in enumerate(path_positions):
-            if pos in cells and step_num in required_steps:
-                steps_in_cells.add(step_num)
-        if match_mode == "any":
-            return len(steps_in_cells) > 0
-        else:
-            return steps_in_cells == required_steps
-
-    if check_type == "cell_has_steps":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        match_mode = condition.get("match", "any")
-        required_steps = set(condition.get("required_steps", []))
-        cell_steps = {}
-        for step_num, pos in enumerate(path_positions):
-            if pos not in cell_steps: cell_steps[pos] = set()
-            cell_steps[pos].add(step_num)
-        if match_mode == "any":
-            for cell in cells:
-                if cell in cell_steps and required_steps.issubset(cell_steps[cell]): return True
-            return False
-        else:
-            for cell in cells:
-                if cell not in cell_steps or not required_steps.issubset(cell_steps[cell]): return False
-            return True
-
-    elif check_type == "visit_cells":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        match_mode = condition.get("match", "any")
-        visited = set(path_positions)
-        if match_mode == "any": return bool(visited & set(cells))
-        else: return set(cells).issubset(visited)
-
-    elif check_type == "total_steps":
-        required = condition.get("count", 0)
-        operator = condition.get("operator", "==")
-        actual = len(path_positions) - 1
-        ops = {"==": lambda a, b: a == b, ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, "<": lambda a, b: a < b, "!=": lambda a, b: a != b}
-        return ops.get(operator, lambda a, b: False)(actual, required)
-
-    elif check_type == "end_at":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        return tuple(player_pos) in cells
-
-    elif check_type == "avoid_cells":
-        cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
-        visited = set(path_positions)
-        return len(visited & cells) == 0
-
-    elif check_type == "visit_count":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        required = condition.get("count", 1)
-        operator = condition.get("operator", "==")
-        match_mode = condition.get("match", "any")
-        ops = {"==": lambda a, b: a == b, ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, "<": lambda a, b: a < b}
-        op_func = ops.get(operator, lambda a, b: a == b)
-        visit_counts = {}
-        for pos in path_positions: visit_counts[pos] = visit_counts.get(pos, 0) + 1
-        if match_mode == "any": return any(op_func(visit_counts.get(cell, 0), required) for cell in cells)
-        else: return all(op_func(visit_counts.get(cell, 0), required) for cell in cells)
-
-    elif check_type == "visit_order":
-        cells = [tuple(c) for c in condition["cells"]]
-        first_visit = {}
-        for step, pos in enumerate(path_positions):
-            if pos not in first_visit: first_visit[pos] = step
-        prev_step = -1
-        for cell in cells:
-            if cell not in first_visit: return False
-            if first_visit[cell] <= prev_step: return False
-            prev_step = first_visit[cell]
-        return True
-
-    elif check_type == "reach_before_step":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        max_step = condition.get("step", 999)
-        match_mode = condition.get("match", "any")
-        first_visit = {}
-        for step, pos in enumerate(path_positions):
-            if pos not in first_visit: first_visit[pos] = step
-        if match_mode == "any": return any(first_visit.get(cell, 9999) < max_step for cell in cells)
-        else: return all(first_visit.get(cell, 9999) < max_step for cell in cells)
-
-    elif check_type == "reach_after_step":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        min_step = condition.get("step", 0)
-        match_mode = condition.get("match", "any")
-        first_visit = {}
-        for step, pos in enumerate(path_positions):
-            if pos not in first_visit: first_visit[pos] = step
-        if match_mode == "any": return any(first_visit.get(cell, 9999) >= min_step for cell in cells)
-        else: return all(first_visit.get(cell, 9999) >= min_step for cell in cells)
-
-    elif check_type == "first_visit_at_step":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        target_step = condition.get("step", 0)
-        match_mode = condition.get("match", "any")
-        first_visit = {}
-        for step, pos in enumerate(path_positions):
-            if pos not in first_visit: first_visit[pos] = step
-        if match_mode == "any": return any(first_visit.get(cell, -1) == target_step for cell in cells)
-        else: return all(first_visit.get(cell, -1) == target_step for cell in cells)
-
-    elif check_type == "last_visit_at_step":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        target_step = condition.get("step", 0)
-        match_mode = condition.get("match", "any")
-        last_visit = {}
-        for step, pos in enumerate(path_positions): last_visit[pos] = step
-        if match_mode == "any": return any(last_visit.get(cell, -1) == target_step for cell in cells)
-        else: return all(last_visit.get(cell, -1) == target_step for cell in cells)
-
-    elif check_type == "path_length_to_cell":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        required = condition.get("count", 0)
-        operator = condition.get("operator", "==")
-        match_mode = condition.get("match", "any")
-        ops = {"==": lambda a, b: a == b, ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, "<": lambda a, b: a < b}
-        op_func = ops.get(operator, lambda a, b: a == b)
-        first_visit = {}
-        for step, pos in enumerate(path_positions):
-            if pos not in first_visit: first_visit[pos] = step
-        if match_mode == "any": return any(op_func(first_visit.get(cell, 9999), required) for cell in cells)
-        else: return all(op_func(first_visit.get(cell, 9999), required) for cell in cells)
-
-    elif check_type == "consecutive_visits":
-        cells = resolve_cells(condition["cells"], grid_cols, grid_rows)
-        required = condition.get("count", 2)
-        match_mode = condition.get("match", "any")
-        def max_consecutive(cell):
-            max_count = 0; current = 0
-            for pos in path_positions:
-                if pos == cell: current += 1; max_count = max(max_count, current)
-                else: current = 0
-            return max_count
-        if match_mode == "any": return any(max_consecutive(cell) >= required for cell in cells)
-        else: return all(max_consecutive(cell) >= required for cell in cells)
-
-    elif check_type == "no_revisit":
-        exceptions = set(resolve_cells(condition.get("except", []), grid_cols, grid_rows))
-        visit_counts = {}
-        for pos in path_positions: visit_counts[pos] = visit_counts.get(pos, 0) + 1
-        for pos, count in visit_counts.items():
-            if count > 1 and pos not in exceptions: return False
-        return True
-    elif check_type == "visit_except_at_steps":
-        cells = set(resolve_cells(condition["cells"], grid_cols, grid_rows))
-        forbidden_steps = parse_step_constraint(condition)
-        match_mode = condition.get("match", "all")
-        
-        visited_validly = set()
-        for step_num, pos in enumerate(path_positions):
-            if pos in cells:
-                # Если наступили в клетку на запрещенном шаге — условие провалено сразу
-                if step_num in forbidden_steps:
-                    return False 
-                visited_validly.add(pos)
-        
-        if match_mode == "any":
-            return len(visited_validly) > 0
-        else:  # match_mode == "all"
-            return cells.issubset(visited_validly)
-    return False
-
-
-
-def check_all_conditions(conditions, path_positions, player_pos, grid_cols, grid_rows):
-    for cond in conditions:
-        if not check_condition(cond, path_positions, player_pos, grid_cols, grid_rows):
-            return False
-    return True
-
-def get_condition_cells(level_data, grid_cols, grid_rows):
-    if level_data.get("type") != "condition": return []
-    cells = set()
-    def extract_cells(cond):
-        if "cells" in cond: cells.update(resolve_cells(cond["cells"], grid_cols, grid_rows))
-        if cond.get("check") == "group":
-            for item in cond.get("items", []): extract_cells(item)
-    for cond in level_data.get("conditions", []): extract_cells(cond)
-    return list(cells)
-
-# --- ЛОГИКА БАРЬЕРОВ ---
 
 def is_path_clear(current_pos, next_pos, barriers_data):
     if not barriers_data:
@@ -513,225 +433,192 @@ def is_path_clear(current_pos, next_pos, barriers_data):
     cx, cy = current_pos
     nx, ny = next_pos
     
-    move_dir = ""
     if nx > cx: move_dir = "right"
     elif nx < cx: move_dir = "left"
     elif ny > cy: move_dir = "down"
     elif ny < cy: move_dir = "up"
+    else: return True
     
-    opposite_dir = {"right": "left", "left": "right", "down": "up", "up": "down"}
-    entry_side = opposite_dir.get(move_dir)
+    opposite = {"right": "left", "left": "right", "down": "up", "up": "down"}
+    entry_side = opposite[move_dir]
 
     for b_pos, b_side, b_type in barriers_data:
-        if tuple(current_pos) == b_pos and b_side == move_dir:
-            if b_type in ["inner", "both"]: return False
-        if tuple(next_pos) == b_pos and b_side == entry_side:
-            if b_type in ["outer", "both"]: return False
+        if tuple(current_pos) == b_pos and b_side == move_dir and b_type in ["inner", "both"]:
+            return False
+        if tuple(next_pos) == b_pos and b_side == entry_side and b_type in ["outer", "both"]:
+            return False
     return True
 
 # =============================================================================
 # ОТРИСОВКА
 # =============================================================================
 
+def draw_grid(surface, width, height, cell_size):
+    for x in range(0, width + 1, cell_size):
+        pygame.draw.line(surface, COLOR_GRID, (x, 0), (x, height))
+    for y in range(0, height + 1, cell_size):
+        pygame.draw.line(surface, COLOR_GRID, (0, y), (width, y))
+
 def draw_barriers(surface, barriers_data, color, cell_size):
-    if not barriers_data: return
+    if not barriers_data:
+        return
     for b_pos, side, b_type in barriers_data:
         px, py = b_pos
-        x = px * cell_size
-        y = py * cell_size
-        start_pos, end_pos = (0,0), (0,0)
-        if side == "up": start_pos, end_pos = (x, y), (x + cell_size, y)
-        elif side == "down": start_pos, end_pos = (x, y + cell_size), (x + cell_size, y + cell_size)
-        elif side == "left": start_pos, end_pos = (x, y), (x, y + cell_size)
-        elif side == "right": start_pos, end_pos = (x + cell_size, y), (x + cell_size, y + cell_size)
-        line_width = 5 if b_type == "both" else 3
-        pygame.draw.line(surface, color, start_pos, end_pos, line_width)
+        x, y = px * cell_size, py * cell_size
+        
+        if side == "up": start, end = (x, y), (x + cell_size, y)
+        elif side == "down": start, end = (x, y + cell_size), (x + cell_size, y + cell_size)
+        elif side == "left": start, end = (x, y), (x, y + cell_size)
+        elif side == "right": start, end = (x + cell_size, y), (x + cell_size, y + cell_size)
+        else: continue
+        
+        pygame.draw.line(surface, color, start, end, 5 if b_type == "both" else 3)
+        
         if b_type != "both":
-            mid_x = (start_pos[0] + end_pos[0]) / 2
-            mid_y = (start_pos[1] + end_pos[1]) / 2
+            mid_x, mid_y = (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
             offset = 6
-            p1, p2, p3 = (0,0), (0,0), (0,0)
             if side == "up":
                 dy = -offset if b_type == "outer" else offset
-                p1 = (mid_x, mid_y + dy); p2 = (mid_x - 4, mid_y); p3 = (mid_x + 4, mid_y)
+                pts = [(mid_x, mid_y + dy), (mid_x - 4, mid_y), (mid_x + 4, mid_y)]
             elif side == "down":
                 dy = offset if b_type == "outer" else -offset
-                p1 = (mid_x, mid_y + dy); p2 = (mid_x - 4, mid_y); p3 = (mid_x + 4, mid_y)
+                pts = [(mid_x, mid_y + dy), (mid_x - 4, mid_y), (mid_x + 4, mid_y)]
             elif side == "left":
                 dx = -offset if b_type == "outer" else offset
-                p1 = (mid_x + dx, mid_y); p2 = (mid_x, mid_y - 4); p3 = (mid_x, mid_y + 4)
+                pts = [(mid_x + dx, mid_y), (mid_x, mid_y - 4), (mid_x, mid_y + 4)]
             elif side == "right":
                 dx = offset if b_type == "outer" else -offset
-                p1 = (mid_x + dx, mid_y); p2 = (mid_x, mid_y - 4); p3 = (mid_x, mid_y + 4)
-            pygame.draw.polygon(surface, color, [p1, p2, p3])
+                pts = [(mid_x + dx, mid_y), (mid_x, mid_y - 4), (mid_x, mid_y + 4)]
+            pygame.draw.polygon(surface, color, pts)
 
-def draw_requirements(surface, requirements, cell_size, font):
+def draw_requirements(surface, requirements, cell_size, base_font):
     for pos, reqs in requirements.items():
         x, y = pos
-        base_x = x * cell_size
-        base_y = y * cell_size
+        base_x, base_y = x * cell_size, y * cell_size
+        
         overlay = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 100))
         surface.blit(overlay, (base_x, base_y))
-        mini_size = cell_size // 3
+        
+        mini = cell_size // 3
         
         for i, req in enumerate(reqs[:9]):
-            text = req["text"]
-            req_type = req["type"]
-            col = i % 3; row = i // 3
-            center_x = base_x + col * mini_size + mini_size // 2
-            center_y = base_y + row * mini_size + mini_size // 2
-            radius = int(mini_size * 0.4)
-
+            text, req_type = req["text"], req["type"]
+            col, row = i % 3, i // 3
+            cx = base_x + col * mini + mini // 2
+            cy = base_y + row * mini + mini // 2
+            r = int(mini * 0.4)
+            
+            colors = {
+                "avoid": COLOR_REQUIREMENT_AVOID, "avoid_step": COLOR_AVOID_STEP,
+                "require_step": COLOR_REQUIRE_STEP, "end": COLOR_REQUIREMENT_END,
+                "visit": (255, 255, 100), "consecutive": (255, 220, 100),
+                "step": COLOR_REQUIREMENT, "order": COLOR_REQUIREMENT
+            }
+            color = colors.get(req_type, (200, 200, 100))
+            
             if req_type == "avoid":
-                color = COLOR_REQUIREMENT_AVOID
-                offset = int(radius * 0.8)
-                pygame.draw.line(surface, color, (center_x - offset, center_y - offset), (center_x + offset, center_y + offset), 2)
-                pygame.draw.line(surface, color, (center_x + offset, center_y - offset), (center_x - offset, center_y + offset), 2)
-            
-            elif req_type == "avoid_step":
-                color = COLOR_AVOID_STEP
-                pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
-                pygame.draw.line(surface, color, 
-                    (center_x - radius + 2, center_y + radius - 2),
-                    (center_x + radius - 2, center_y - radius + 2), 2)
-                display_text = text.replace("⊘", "")
-                req_font = pygame.font.SysFont("Arial", max(8, int(mini_size * 0.5)), bold=True)
-                txt_surf = req_font.render(display_text, True, color)
-                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
-                surface.blit(txt_surf, txt_rect)
-            
-            elif req_type == "require_step":
-                color = COLOR_REQUIREMENT_STEP
-                pygame.draw.circle(surface, color, (center_x, center_y), radius, 2)
-                display_text = text.replace("✓", "")
-                req_font = pygame.font.SysFont("Arial", max(8, int(mini_size * 0.5)), bold=True)
-                txt_surf = req_font.render(display_text, True, color)
-                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
-                surface.blit(txt_surf, txt_rect)
-            
+                off = int(r * 0.8)
+                pygame.draw.line(surface, color, (cx - off, cy - off), (cx + off, cy + off), 2)
+                pygame.draw.line(surface, color, (cx + off, cy - off), (cx - off, cy + off), 2)
             elif req_type == "end":
-                color = COLOR_REQUIREMENT_END
-                pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
-                pygame.draw.circle(surface, color, (center_x, center_y), radius // 2)
+                pygame.draw.circle(surface, color, (cx, cy), r, 1)
+                pygame.draw.circle(surface, color, (cx, cy), r // 2)
             elif req_type == "visit":
-                color = (255, 255, 100)
-                pygame.draw.circle(surface, color, (center_x, center_y), radius)
-            elif req_type == "order":
-                color = COLOR_REQUIREMENT
-                pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
-                ord_font = pygame.font.SysFont("Arial", int(mini_size * 0.6), bold=True)
-                txt_surf = ord_font.render(text, True, color)
-                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
-                surface.blit(txt_surf, txt_rect)
-            elif "⟳" in text:
-                count_val = text.replace("⟳", "")
-                color = (255, 220, 100)
-                req_font = font
-                if len(count_val) > 1: req_font = pygame.font.SysFont("Arial", int(mini_size * 0.7), bold=True)
-                txt_surf = req_font.render(count_val, True, color)
-                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
-                surface.blit(txt_surf, txt_rect)
-                arc_rect = pygame.Rect(center_x - radius, center_y - radius, radius * 2, radius * 2)
+                pygame.draw.circle(surface, color, (cx, cy), r)
+            elif req_type == "consecutive":
+                arc_rect = pygame.Rect(cx - r, cy - r, r * 2, r * 2)
                 pygame.draw.arc(surface, color, arc_rect, 0.5, 5.8, 2)
-                tri_center = (center_x + radius, center_y)
-                p1 = (tri_center[0] - 3, tri_center[1] - 4)
-                p2 = (tri_center[0] + 3, tri_center[1] - 4)
-                p3 = (tri_center[0], tri_center[1] + 3)
-                pygame.draw.polygon(surface, color, [p1, p2, p3])
+                f = pygame.font.SysFont("Arial", int(mini * 0.6), bold=True)
+                ts = f.render(text.replace("⟳", ""), True, color)
+                surface.blit(ts, ts.get_rect(center=(cx, cy)))
             else:
-                if req_type in ("step", "order"): color = COLOR_REQUIREMENT
-                else: color = (200, 200, 100)
-                txt_surf = font.render(text, True, color)
-                txt_rect = txt_surf.get_rect(center=(center_x, center_y))
-                surface.blit(txt_surf, txt_rect)
+                display_text = text
+                for prefix in ["⊘", "✓", "①", "$"]:
+                    display_text = display_text.replace(prefix, "")
+                
+                font_size = int(mini * 0.6)
+                while font_size > 6:
+                    font = pygame.font.SysFont("Arial", font_size, bold=True)
+                    if font.size(display_text)[0] <= int(r * 1.6):
+                        break
+                    font_size -= 1
+                font = pygame.font.SysFont("Arial", font_size, bold=True)
+                
+                if req_type == "avoid_step":
+                    pygame.draw.circle(surface, color, (cx, cy), r, 1)
+                    pygame.draw.line(surface, color, (cx - r + 2, cy + r - 2), (cx + r - 2, cy - r + 2), 2)
+                elif req_type == "require_step":
+                    pygame.draw.circle(surface, color, (cx, cy), r, 2)
+                elif req_type == "order":
+                    pygame.draw.circle(surface, color, (cx, cy), r, 1)
+                
+                ts = font.render(display_text, True, color)
+                surface.blit(ts, ts.get_rect(center=(cx, cy)))
 
 def draw_global_requirements(surface, global_reqs, font, screen_width):
-    if not global_reqs: return
-    padding = 10
-    y_offset = padding
+    y = 10
     for req in global_reqs:
-        text = req["text"]
-        req_type = req["type"]
-        color = COLOR_GLOBAL_REQ if req_type == "steps" else (200, 200, 200)
-        txt_surf = font.render(text, True, color)
-        txt_rect = txt_surf.get_rect()
-        txt_rect.topright = (screen_width - padding, y_offset)
-        bg_rect = txt_rect.inflate(10, 6)
-        bg_rect.topright = (screen_width - padding + 5, y_offset - 3)
-        pygame.draw.rect(surface, (20, 20, 20), bg_rect)
-        pygame.draw.rect(surface, color, bg_rect, 1)
-        surface.blit(txt_surf, txt_rect)
-        y_offset += txt_rect.height + 10
+        color = COLOR_GLOBAL_REQ if req["type"] == "steps" else (200, 200, 200)
+        ts = font.render(req["text"], True, color)
+        tr = ts.get_rect(topright=(screen_width - 10, y))
+        bg = tr.inflate(10, 6)
+        bg.topright = (screen_width - 5, y - 3)
+        pygame.draw.rect(surface, (20, 20, 20), bg)
+        pygame.draw.rect(surface, color, bg, 1)
+        surface.blit(ts, tr)
+        y += tr.height + 10
 
-def calculate_target_pos(start_pos, ans_str, grid_cols, grid_rows):
-    x, y = start_pos
+def calculate_target_pos(start, ans_str, cols, rows):
+    x, y = start
     mapping = {"u": (0, -1), "d": (0, 1), "l": (-1, 0), "r": (1, 0)}
     for move in ans_str.lower().split():
-        m = move[0]
-        if m in mapping:
-            dx, dy = mapping[m]
-            if 0 <= x + dx < grid_cols and 0 <= y + dy < grid_rows:
-                x += dx; y += dy
+        if move[0] in mapping:
+            dx, dy = mapping[move[0]]
+            if 0 <= x + dx < cols and 0 <= y + dy < rows:
+                x, y = x + dx, y + dy
     return (x, y)
 
 def normalize_ans(ans_str):
     mapping = {"up": "u", "u": "u", "down": "d", "d": "d", "left": "l", "l": "l", "right": "r", "r": "r"}
-    return [mapping[move] for move in ans_str.lower().split() if move in mapping]
-
-def draw_grid(surface, width, height, cell_size):
-    for x in range(0, width + 1, cell_size): 
-        pygame.draw.line(surface, COLOR_GRID, (x, 0), (x, height))
-    for y in range(0, height + 1, cell_size): 
-        pygame.draw.line(surface, COLOR_GRID, (0, y), (width, y))
+    return [mapping[m] for m in ans_str.lower().split() if m in mapping]
 
 # =============================================================================
-# РАЗРАБОТЧИК
+# КОНСОЛЬ РАЗРАБОТЧИКА
 # =============================================================================
+
 def console_listener():
-    print("\n[DEV SYSTEM] Консоль запущена. F9+F11 для разблокировки.")
+    print("\n[DEV] Консоль. F9+F11 для активации.")
     while game_running:
         try:
-            command = input()
+            cmd = input().strip().lower()
             if not game_running: break
             if not dev_access_granted:
-                print("[LOCKED] Активируйте режим разработчика (F9+F11).")
+                print("[LOCKED] F9+F11")
                 continue
-            cmd_clean = command.strip().lower()
-            if cmd_clean == '1': 
-                print(f"ans: {' '.join(dev_recording)}\n")
-            elif cmd_clean == '2': 
-                dev_recording.clear()
-                print("[INFO] Очищено.\n")
-            elif cmd_clean == '3':
+            
+            if cmd == '1': print(f"ans: {' '.join(dev_recording)}\n")
+            elif cmd == '2': dev_recording.clear(); print("[OK] Очищено\n")
+            elif cmd == '3':
                 global dev_show_coords
                 dev_show_coords = not dev_show_coords
-                print(f"[INFO] Координаты: {'АКТИВНО' if dev_show_coords else 'НЕАКТИВНО'}\n")
-                print_menu()
-            elif cmd_clean == '4' or cmd_clean == 'cells':
+                print(f"[OK] Координаты: {'ВКЛ' if dev_show_coords else 'ВЫКЛ'}\n")
+            elif cmd == '4':
                 cell_map = {}
                 for step, pos in enumerate(path_positions):
                     if pos not in cell_map: cell_map[pos] = []
                     cell_map[pos].append(step)
-                print("\n=== ДАННЫЕ ПО КЛЕТКАМ ===")
-                sorted_cells = sorted(cell_map.keys(), key=lambda k: (k[1], k[0]))
-                for cell in sorted_cells: print(f"{cell[0]},{cell[1]}: {cell_map[cell]}")
-                print("=========================\n")
-            elif cmd_clean == '5':
+                print("\n=== КЛЕТКИ ===")
+                for cell in sorted(cell_map.keys(), key=lambda k: (k[1], k[0])):
+                    print(f"{cell[0]},{cell[1]}: {cell_map[cell]}")
+                print("==============\n")
+            elif cmd == '5':
                 global dev_disable_victory
                 dev_disable_victory = not dev_disable_victory
-                print(f"[INFO] Отключение победы: {'АКТИВНО' if dev_disable_victory else 'НЕАКТИВНО'}\n")
-                print_menu()
-            elif cmd_clean == 'help': 
-                print_menu()
-            else: 
-                print("Неизвестная команда.")
-        except EOFError: break
-
-def print_menu():
-    c_stat = "АКТИВНО" if dev_show_coords else "НЕАКТИВНО"
-    v_stat = "АКТИВНО" if dev_disable_victory else "НЕАКТИВНО"
-    print(f"\n=== DEV МЕНЮ ===\n1. SHOW | 2. CLEAR | 3. COORDS - {c_stat} | 4. CELLS | 5. NO WIN - {v_stat} | help\n================")
+                print(f"[OK] Победа: {'ВЫКЛ' if dev_disable_victory else 'ВКЛ'}\n")
+            elif cmd == 'help': print("\n1=SHOW 2=CLEAR 3=COORDS 4=CELLS 5=NOWIN\n")
+        except EOFError:
+            break
 
 # =============================================================================
 # ОСНОВНОЙ ЦИКЛ
@@ -742,7 +629,7 @@ def run_game(selected_idx, hints_enabled):
     global WINDOW_WIDTH, WINDOW_HEIGHT, CELL_SIZE, GRID_COLS, GRID_ROWS
     
     if not LEVELS:
-        print("[CRITICAL] Нет уровней для загрузки.")
+        print("[CRITICAL] Нет уровней.")
         sys.exit(1)
 
     pygame.init()
@@ -752,9 +639,8 @@ def run_game(selected_idx, hints_enabled):
     screen_w, screen_h = info.current_w, info.current_h
     current_idx = selected_idx
     screen = None
-    game_surface = None 
-    GRID_OFFSET_X = 0
-    GRID_OFFSET_Y = 0
+    game_surface = None
+    GRID_OFFSET_X = GRID_OFFSET_Y = 0
     clock = pygame.time.Clock()
 
     player_pos = [0, 0]
@@ -765,226 +651,203 @@ def run_game(selected_idx, hints_enabled):
     level_type = "sequence"
     level_conditions = []
     condition_cells = []
-    
-    poison_data = [] 
+    poison_data = []
     walls_data = []
-    
     show_requirements = True
-    level_requirements = {} 
+    level_requirements = {}
     global_requirements = []
 
     console_thread = threading.Thread(target=console_listener, daemon=True)
     console_thread.start()
 
-    def load_level_data(idx):
+    def load_level(idx):
         nonlocal player_pos, required_sequence, player_history, target_grid_pos
-        nonlocal level_type, level_conditions, condition_cells, poison_data, walls_data, screen, game_surface
-        nonlocal GRID_OFFSET_X, GRID_OFFSET_Y, show_requirements, level_requirements, global_requirements
+        nonlocal level_type, level_conditions, condition_cells, poison_data, walls_data
+        nonlocal screen, game_surface, GRID_OFFSET_X, GRID_OFFSET_Y
+        nonlocal show_requirements, level_requirements, global_requirements
         global dev_recording, path_positions
         global WINDOW_WIDTH, WINDOW_HEIGHT, CELL_SIZE, GRID_COLS, GRID_ROWS
 
-        level_data = LEVELS[idx]
-        GRID_COLS, GRID_ROWS = level_data.get("grid", (16, 12))
+        lvl = LEVELS[idx]
+        GRID_COLS, GRID_ROWS = lvl.get("grid", (16, 12))
         
-        max_w = screen_w * 0.85 
-        max_h = screen_h * 0.85
+        max_w, max_h = screen_w * 0.85, screen_h * 0.85
         CELL_SIZE = int(min(max_w // GRID_COLS, max_h // GRID_ROWS))
         
-        grid_pix_w = CELL_SIZE * GRID_COLS
-        grid_pix_h = CELL_SIZE * GRID_ROWS
-        
-        GRID_OFFSET_X = int(grid_pix_w * 0.05)
-        GRID_OFFSET_Y = int(grid_pix_h * 0.05)
-        
-        WINDOW_WIDTH = grid_pix_w + GRID_OFFSET_X * 2
-        WINDOW_HEIGHT = grid_pix_h + GRID_OFFSET_Y * 2
+        grid_w, grid_h = CELL_SIZE * GRID_COLS, CELL_SIZE * GRID_ROWS
+        GRID_OFFSET_X = int(grid_w * 0.05)
+        GRID_OFFSET_Y = int(grid_h * 0.05)
+        WINDOW_WIDTH = grid_w + GRID_OFFSET_X * 2
+        WINDOW_HEIGHT = grid_h + GRID_OFFSET_Y * 2
         
         screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        game_surface = pygame.Surface((grid_pix_w + 1, grid_pix_h + 1), pygame.SRCALPHA)
+        game_surface = pygame.Surface((grid_w + 1, grid_h + 1), pygame.SRCALPHA)
         
-        level_type = level_data.get("type", "sequence")
-        start = level_data["start"]
-        player_pos = list(start)
+        level_type = lvl.get("type", "sequence")
+        player_pos = list(lvl["start"])
         player_history = []
         dev_recording.clear()
         path_positions = [tuple(player_pos)]
         
-        poison_data = level_data.get("poison", [])[:]
-        walls_data = level_data.get("walls", [])[:]
+        poison_data = lvl.get("poison", [])[:]
+        walls_data = lvl.get("walls", [])[:]
 
-        wall_poison_flag = level_data.get("wall_is_poison", False)
-        if wall_poison_flag:
-            exceptions = []
-            if isinstance(wall_poison_flag, dict):
-                exceptions = [tuple(c) for c in wall_poison_flag.get("except", [])]
-            
+        if lvl.get("wall_is_poison"):
+            flag = lvl["wall_is_poison"]
+            exceptions = [tuple(c) for c in flag.get("except", [])] if isinstance(flag, dict) else []
             new_walls = []
             for w in walls_data:
-                if w[0] not in exceptions:
-                    poison_data.append(w)
-                else:
-                    new_walls.append(w)
+                if w[0] not in exceptions: poison_data.append(w)
+                else: new_walls.append(w)
             walls_data = new_walls
 
         show_requirements = True
-        level_requirements, global_requirements = get_condition_requirements(level_data, GRID_COLS, GRID_ROWS)
+        level_requirements, global_requirements = get_condition_requirements(lvl, GRID_COLS, GRID_ROWS)
         
         if level_type == "sequence":
-            required_sequence = normalize_ans(level_data.get("ans", ""))
-            target_grid_pos = calculate_target_pos(start, level_data.get("ans", ""), GRID_COLS, GRID_ROWS)
-            level_conditions = []
-            condition_cells = []
+            required_sequence = normalize_ans(lvl.get("ans", ""))
+            target_grid_pos = calculate_target_pos(lvl["start"], lvl.get("ans", ""), GRID_COLS, GRID_ROWS)
+            level_conditions, condition_cells = [], []
         else:
-            required_sequence = []
-            target_grid_pos = None
-            level_conditions = level_data.get("conditions", [])
-            condition_cells = get_condition_cells(level_data, GRID_COLS, GRID_ROWS)
+            required_sequence, target_grid_pos = [], None
+            level_conditions = lvl.get("conditions", [])
+            condition_cells = get_condition_cells(lvl, GRID_COLS, GRID_ROWS)
         
-        name = level_data.get("name", f"Уровень {idx + 1}")
+        name = lvl.get("name", f"Уровень {idx + 1}")
         pygame.display.set_caption(f"{name} ({GRID_COLS}x{GRID_ROWS})")
-        
-        print(f"\n{'='*50}\n--- {name} ---\nТип: {level_type}")
-        if hints_enabled and "hint" in level_data: print(f"Подсказка: {level_data['hint']}")
-        if walls_data: print(f"Стены (зелёные): {len(walls_data)}")
-        if poison_data: print(f"Яд (красные): {len(poison_data)}")
-        if level_requirements or global_requirements: 
-            print(f"[X] - показать/скрыть требования")
-        print(f"{'='*50}\n")
+        print(f"\n{'='*40}\n--- {name} ---\nТип: {level_type}")
+        if hints_enabled and "hint" in lvl: print(f"Подсказка: {lvl['hint']}")
+        print(f"{'='*40}\n")
 
-    load_level_data(current_idx)
+    load_level(current_idx)
     
     font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
-    font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
+    font_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
     font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
-    font_requirements = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
-    font_global = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+    font_req = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
 
     while game_running:
         for event in pygame.event.get():
-            if event.type == pygame.QUIT: game_running = False
+            if event.type == pygame.QUIT:
+                game_running = False
             
             if event.type == pygame.KEYDOWN:
                 keys = pygame.key.get_pressed()
                 if keys[pygame.K_F9] and keys[pygame.K_F11]:
-                    dev_access_granted = True; print_menu()
+                    dev_access_granted = True
+                    print("\n[DEV] Активировано!\n")
 
                 if event.key == pygame.K_r:
-                    load_level_data(current_idx)
+                    load_level(current_idx)
                     font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
-                    font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
+                    font_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
                     font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
-                    font_requirements = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
-                    font_global = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+                    font_req = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
                     continue
                 
                 if event.key == pygame.K_x:
                     show_requirements = not show_requirements
-                    status = "ВКЛ" if show_requirements else "ВЫКЛ"
-                    print(f"[INFO] Отображение требований: {status}")
                     continue
 
-                move_attempt = None
-                dx, dy = 0, 0
-                
-                if event.key == pygame.K_UP:    dx, dy = 0, -1; move_attempt = "u"
-                elif event.key == pygame.K_DOWN:  dx, dy = 0, 1;  move_attempt = "d"
-                elif event.key == pygame.K_LEFT:  dx, dy = -1, 0; move_attempt = "l"
-                elif event.key == pygame.K_RIGHT: dx, dy = 1, 0;  move_attempt = "r"
+                dx, dy, move = 0, 0, None
+                if event.key == pygame.K_UP:    dx, dy, move = 0, -1, "u"
+                elif event.key == pygame.K_DOWN:  dx, dy, move = 0, 1, "d"
+                elif event.key == pygame.K_LEFT:  dx, dy, move = -1, 0, "l"
+                elif event.key == pygame.K_RIGHT: dx, dy, move = 1, 0, "r"
 
-                if move_attempt:
+                if move:
                     if show_requirements and len(path_positions) == 1:
                         show_requirements = False
                     
-                    target_pos = [player_pos[0] + dx, player_pos[1] + dy]
-                    in_bounds = (0 <= target_pos[0] < GRID_COLS and 0 <= target_pos[1] < GRID_ROWS)
-                    
-                    hit_poison = not is_path_clear(player_pos, target_pos, poison_data)
-                    blocked_by_wall = not is_path_clear(player_pos, target_pos, walls_data)
+                    target = [player_pos[0] + dx, player_pos[1] + dy]
+                    in_bounds = 0 <= target[0] < GRID_COLS and 0 <= target[1] < GRID_ROWS
+                    hit_poison = not is_path_clear(player_pos, target, poison_data)
+                    blocked = not is_path_clear(player_pos, target, walls_data)
 
                     if hit_poison:
-                        print("☠ ВЫ ПОГИБЛИ! (Задели ядовитый барьер)")
-                        load_level_data(current_idx)
+                        print("☠ ПОГИБ!")
+                        load_level(current_idx)
                         continue
 
-                    if not in_bounds or blocked_by_wall: pass
-                    else: player_pos = target_pos
+                    if in_bounds and not blocked:
+                        player_pos = target
 
-                    player_history.append(move_attempt)
-                    dev_recording.append(move_attempt)
+                    player_history.append(move)
+                    dev_recording.append(move)
                     path_positions.append(tuple(player_pos))
 
-                    level_complete = False
+                    complete = False
                     if level_type == "sequence":
-                        if player_history == required_sequence: level_complete = True
-                        elif len(player_history) >= len(required_sequence):
-                             if hints_enabled: print("Неверная последовательность! Жмите 'R'.")
+                        if player_history == required_sequence:
+                            complete = True
+                        elif len(player_history) >= len(required_sequence) and hints_enabled:
+                            print("Неверно! R")
                     else:
                         if check_all_conditions(level_conditions, path_positions, player_pos, GRID_COLS, GRID_ROWS):
-                            level_complete = True
+                            complete = True
                     
-                    if level_complete:
+                    if complete:
                         if dev_disable_victory:
-                            print(f"[DEV] Условие победы выполнено, но переход отключен.")
+                            print("[DEV] Победа OFF")
                         else:
-                            print(f"✓ Уровень {current_idx + 1} ПРОЙДЕН!")
+                            print(f"✓ Уровень {current_idx + 1} пройден!")
                             current_idx += 1
                             if current_idx < len(LEVELS):
-                                load_level_data(current_idx)
+                                load_level(current_idx)
                                 font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
-                                font_steps_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
+                                font_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
                                 font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
-                                font_requirements = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
-                                font_global = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+                                font_req = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
                             else:
-                                print("\n🎉 ВЫ ПРОШЛИ ВСЮ ИГРУ! 🎉")
+                                print("\n🎉 ИГРА ПРОЙДЕНА! 🎉")
                                 game_running = False
 
-        # --- ОТРИСОВКА ---
         screen.fill(COLOR_BG)
         game_surface.fill(COLOR_BG)
-        
-        draw_grid(game_surface, GRID_COLS*CELL_SIZE, GRID_ROWS*CELL_SIZE, CELL_SIZE)
+        draw_grid(game_surface, GRID_COLS * CELL_SIZE, GRID_ROWS * CELL_SIZE, CELL_SIZE)
         
         if level_type == "sequence" and target_grid_pos:
-            pygame.draw.rect(game_surface, COLOR_TARGET, (target_grid_pos[0]*CELL_SIZE, target_grid_pos[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE))
+            pygame.draw.rect(game_surface, COLOR_TARGET,
+                (target_grid_pos[0] * CELL_SIZE, target_grid_pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
         
         if level_type == "condition":
             for cell in condition_cells:
-                pygame.draw.rect(game_surface, COLOR_CONDITION_HINT, (cell[0]*CELL_SIZE, cell[1]*CELL_SIZE, CELL_SIZE, CELL_SIZE))
+                pygame.draw.rect(game_surface, COLOR_CONDITION_HINT,
+                    (cell[0] * CELL_SIZE, cell[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
         
         draw_barriers(game_surface, walls_data, COLOR_WALL, CELL_SIZE)
         draw_barriers(game_surface, poison_data, COLOR_POISON, CELL_SIZE)
 
         if not (show_requirements and (level_requirements or global_requirements)):
             cell_data = {}
-            for step_num, pos in enumerate(path_positions):
+            for step, pos in enumerate(path_positions):
                 if pos not in cell_data: cell_data[pos] = []
-                if len(cell_data[pos]) < 9: cell_data[pos].append(step_num)
+                if len(cell_data[pos]) < 9: cell_data[pos].append(step)
             for pos, steps in cell_data.items():
                 for i, val in enumerate(steps):
-                    current_font = font_steps_small if val >= 100 else font_steps
-                    txt_surf = current_font.render(str(val), True, COLOR_TEXT)
-                    game_surface.blit(txt_surf, (pos[0]*CELL_SIZE+2+(i%3)*(CELL_SIZE//3), pos[1]*CELL_SIZE+2+(i//3)*(CELL_SIZE//3)))
+                    f = font_small if val >= 100 else font_steps
+                    ts = f.render(str(val), True, COLOR_TEXT)
+                    game_surface.blit(ts, (pos[0] * CELL_SIZE + 2 + (i % 3) * (CELL_SIZE // 3),
+                                           pos[1] * CELL_SIZE + 2 + (i // 3) * (CELL_SIZE // 3)))
 
-        px, py = player_pos[0]*CELL_SIZE + CELL_SIZE//2, player_pos[1]*CELL_SIZE + CELL_SIZE//2
+        px = player_pos[0] * CELL_SIZE + CELL_SIZE // 2
+        py = player_pos[1] * CELL_SIZE + CELL_SIZE // 2
         pygame.draw.circle(game_surface, COLOR_PLAYER, (px, py), int(CELL_SIZE * 0.4))
 
         if show_requirements and level_requirements:
-            draw_requirements(game_surface, level_requirements, CELL_SIZE, font_requirements)
+            draw_requirements(game_surface, level_requirements, CELL_SIZE, font_req)
 
         if dev_show_coords:
             for gy in range(GRID_ROWS):
                 for gx in range(GRID_COLS):
-                    coord_text = f"{gx},{gy}"
-                    txt_surf = font_coords.render(coord_text, True, COLOR_DEV_COORDS)
-                    tx = (gx + 1) * CELL_SIZE - txt_surf.get_width() - 3
-                    ty = (gy + 1) * CELL_SIZE - txt_surf.get_height() - 3
-                    game_surface.blit(txt_surf, (tx, ty))
+                    ts = font_coords.render(f"{gx},{gy}", True, COLOR_DEV_COORDS)
+                    game_surface.blit(ts, ((gx + 1) * CELL_SIZE - ts.get_width() - 3,
+                                           (gy + 1) * CELL_SIZE - ts.get_height() - 3))
 
         screen.blit(game_surface, (GRID_OFFSET_X, GRID_OFFSET_Y))
 
         if show_requirements and global_requirements:
-            draw_global_requirements(screen, global_requirements, font_global, WINDOW_WIDTH)
+            draw_global_requirements(screen, global_requirements, font_req, WINDOW_WIDTH)
 
         pygame.display.flip()
         clock.tick(60)
@@ -993,42 +856,32 @@ def run_game(selected_idx, hints_enabled):
     sys.exit()
 
 if __name__ == "__main__":
-    print("\n" + "=" * 50 + "\n        GRID PUZZLE GAME\n" + "=" * 50)
+    print("\n" + "=" * 40 + "\n     GRID PUZZLE GAME\n" + "=" * 40)
     
-    # === ЛОГИКА ЗАГРУЗКИ ПОЛЬЗОВАТЕЛЬСКИХ УРОВНЕЙ ===
-    check_user = input("Проверить наличие user_levels.json и загрузить? (да/yes/y): ").strip().lower()
+    check = input("Загрузить user_levels.json? (y): ").strip().lower()
     
-    if check_user in ("да", "yes", "y"):
+    if check in ("да", "yes", "y"):
         if os.path.exists("user_levels.json"):
             LEVELS = load_levels_from_file("user_levels.json", is_internal=False)
-            if not LEVELS:
-                print("Не удалось загрузить внешние уровни. Загрузка стандартных...")
-                LEVELS = load_levels_from_file("levels.json", is_internal=True)
-        else:
-            print("user_levels.json не найден. Загрузка стандартных...")
+        if not LEVELS:
             LEVELS = load_levels_from_file("levels.json", is_internal=True)
     else:
         LEVELS = load_levels_from_file("levels.json", is_internal=True)
 
     if not LEVELS:
-        print("Ошибка: Не удалось загрузить ни одни уровни. Выход.")
+        print("Ошибка: нет уровней.")
         sys.exit(1)
 
-    hint_input = input("Включить подсказки? ('да' или Enter): ").strip().lower()
-    hints_enabled = hint_input in ("да", "yes", "y", "подсказывать")
+    hints = input("Подсказки? (y): ").strip().lower() in ("да", "yes", "y")
     
-    print(f"\nЗагружено уровней: {len(LEVELS)}")
-    print("Доступные уровни:")
+    print(f"\nУровней: {len(LEVELS)}")
     for i, lvl in enumerate(LEVELS):
-        print(f"  {i+1}. [{ 'SEQ' if lvl.get('type')=='sequence' else 'COND' }] {lvl.get('name', f'Уровень {i+1}')}")
+        t = "SEQ" if lvl.get("type") == "sequence" else "COND"
+        print(f"  {i+1}. [{t}] {lvl.get('name', f'Уровень {i+1}')}")
     
     try:
-        choice = input(f"\nВыберите уровень (1-{len(LEVELS)}): ")
-        if choice.strip() == "":
-            idx = 0
-        else:
-            idx = int(choice) - 1
-        
-        run_game(max(0, min(idx, len(LEVELS) - 1)), hints_enabled)
+        choice = input(f"\nВыбор (1-{len(LEVELS)}): ").strip()
+        idx = int(choice) - 1 if choice else 0
+        run_game(max(0, min(idx, len(LEVELS) - 1)), hints)
     except ValueError:
-        run_game(0, hints_enabled)
+        run_game(0, hints)
