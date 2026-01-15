@@ -3,7 +3,8 @@ import sys
 import threading
 import json
 import os
-import savestates  # <--- НОВЫЙ МОДУЛЬ
+import savestates
+import editor  # <-- НОВЫЙ ИМПОРТ
 
 # --- ЦВЕТА ---
 COLOR_BG = (0, 0, 0)
@@ -23,6 +24,9 @@ COLOR_GLOBAL_REQ = (255, 220, 100)
 COLOR_AVOID_STEP = (255, 80, 180)
 COLOR_REQUIRE_STEP = (100, 255, 150)
 
+# --- НОВЫЙ: Цвет индикатора режима редактирования ---
+COLOR_EDITOR_MODE = (255, 100, 255)
+
 # Глобальные переменные
 dev_recording = []
 path_positions = []
@@ -31,7 +35,9 @@ dev_access_granted = False
 dev_show_coords = False
 dev_disable_victory = False
 
-# --- ИЗМЕНЕНИЕ: Ширина боковой панели ---
+# --- НОВЫЙ: Флаг режима редактирования ---
+editor_mode = False
+
 SIDE_PANEL_WIDTH = 250 
 
 WINDOW_WIDTH = 800
@@ -64,19 +70,15 @@ def process_level_data(data):
         if "grid" in lvl: lvl["grid"] = tuple(lvl["grid"])
         if "start" in lvl: lvl["start"] = tuple(lvl["start"])
         
-        # Условия - только словари {"check": ..., "cells": ...}
         if "conditions" in lvl:
             for cond in lvl["conditions"]:
                 if "cells" in cond:
                     c = cond["cells"]
-                    # [x, y] -> [(x, y)]
                     if isinstance(c, list) and len(c) > 0 and isinstance(c[0], (int, float)):
                         cond["cells"] = [tuple(c)]
-                    # [[x1,y1], [x2,y2]] -> [(x1,y1), (x2,y2)]
                     elif isinstance(c, list):
                         cond["cells"] = [tuple(item) for item in c]
         
-        # Стены и яд: [[coords], {"sides": "type"}]
         for key in ["poison", "walls"]:
             if key in lvl:
                 processed = []
@@ -84,13 +86,11 @@ def process_level_data(data):
                     raw_target = item[0]
                     sides_dict = item[1]
                     
-                    # Определяем координаты
                     if isinstance(raw_target[0], list):
                         targets = [tuple(c) for c in raw_target]
                     else:
                         targets = [tuple(raw_target)]
                     
-                    # Обрабатываем стороны
                     for sides_key, b_type in sides_dict.items():
                         target_sides = []
                         if sides_key in ["square", "all", "box"]:
@@ -133,15 +133,35 @@ def load_levels_from_file(filename, is_internal=True):
 # =============================================================================
 _font_cache = {}
 
+_font_cache = {}
+
 def get_font(size, bold=False):
-    """Возвращает кэшированный шрифт, чтобы не убивать CPU."""
+    """Возвращает кэшированный шрифт с поддержкой Unicode."""
     key = (size, bold)
     if key not in _font_cache:
-        font_names = "segoeuisymbol, dejavusans, arialunicode, arial" 
-        try:
-            _font_cache[key] = pygame.font.SysFont(font_names, size, bold=bold)
-        except:
-            _font_cache[key] = pygame.font.SysFont("arial", size, bold=bold)
+        # Порядок важен: сначала шрифты с хорошей Unicode поддержкой
+        font_names = [
+            "Arial",
+            "Segoe UI", 
+            "Tahoma",
+            "DejaVu Sans",
+            "Liberation Sans",
+        ]
+        
+        font = None
+        for name in font_names:
+            try:
+                font = pygame.font.SysFont(name, size, bold=bold)
+                # Проверяем что шрифт реально загрузился
+                if font.get_height() > 0:
+                    break
+            except:
+                continue
+        
+        if font is None:
+            font = pygame.font.Font(None, size)  # Fallback на дефолтный
+        
+        _font_cache[key] = font
     return _font_cache[key]
 
 # =============================================================================
@@ -570,23 +590,48 @@ def draw_requirements(surface, requirements, cell_size):
                 ts = font.render(display_text, True, color)
                 surface.blit(ts, ts.get_rect(center=(cx, cy)))
 
-# --- ИЗМЕНЕНИЕ: Рисуем в боковой панели ---
 def draw_global_requirements(surface, global_reqs, font, panel_x_start):
     y = 10
     for req in global_reqs:
         color = COLOR_GLOBAL_REQ if req["type"] == "steps" else (200, 200, 200)
         ts = font.render(req["text"], True, color)
-        
-        # Размещаем текст слева внутри панели с отступом 10 пикселей
         tr = ts.get_rect(topleft=(panel_x_start + 10, y))
-        
         bg = tr.inflate(10, 6)
         bg.topleft = (panel_x_start + 5, y - 3)
-        
         pygame.draw.rect(surface, (20, 20, 20), bg)
         pygame.draw.rect(surface, color, bg, 1)
         surface.blit(ts, tr)
         y += tr.height + 10
+
+# --- НОВЫЙ: Индикатор режима редактирования ---
+def draw_editor_indicator(surface, panel_x_start, panel_height):
+    """Рисует индикатор режима редактирования."""
+    # Используем системный шрифт Arial который точно поддерживает кириллицу
+    try:
+        font = pygame.font.SysFont("arial", 14, bold=True)
+        hint_font = pygame.font.SysFont("arial", 11)
+    except:
+        font = pygame.font.Font(None, 16)
+        hint_font = pygame.font.Font(None, 13)
+    
+    # Текст режима (можно заменить на английский если проблемы остаются)
+    text = "EDITOR MODE"  # или "РЕЖИМ РЕДАКТИРОВАНИЯ"
+    ts = font.render(text, True, COLOR_EDITOR_MODE)
+    
+    # Позиция внизу панели
+    x = panel_x_start + 10
+    y = panel_height - 60
+    
+    # Фон
+    bg_rect = pygame.Rect(panel_x_start + 5, y - 5, SIDE_PANEL_WIDTH - 10, 50)
+    pygame.draw.rect(surface, (30, 15, 30), bg_rect)
+    pygame.draw.rect(surface, COLOR_EDITOR_MODE, bg_rect, 2)
+    
+    surface.blit(ts, (x, y))
+    
+    # Подсказка
+    hint = hint_font.render("Enter - reload level", True, (180, 100, 180))
+    surface.blit(hint, (x, y + 22))
 
 def calculate_target_pos(start, ans_str, cols, rows):
     x, y = start
@@ -643,9 +688,13 @@ def console_listener():
 # ОСНОВНОЙ ЦИКЛ
 # =============================================================================
 
-def run_game(selected_idx, hints_enabled):
+def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
     global game_running, dev_recording, dev_access_granted, path_positions, dev_disable_victory
     global WINDOW_WIDTH, WINDOW_HEIGHT, CELL_SIZE, GRID_COLS, GRID_ROWS
+    global editor_mode
+    global LEVELS
+
+    editor_mode = edit_mode_enabled
     
     if not LEVELS:
         print("[CRITICAL] Нет уровней.")
@@ -676,7 +725,6 @@ def run_game(selected_idx, hints_enabled):
     level_requirements = {}
     global_requirements = []
     
-    # Инициализация менеджера сохранений
     state_manager = savestates.StateManager(max_history=200)
 
     console_thread = threading.Thread(target=console_listener, daemon=True)
@@ -693,7 +741,6 @@ def run_game(selected_idx, hints_enabled):
         lvl = LEVELS[idx]
         GRID_COLS, GRID_ROWS = lvl.get("grid", (16, 12))
         
-        # Корректируем ширину для расчета CELL_SIZE (вычитаем панель)
         available_w = (screen_w * 0.85) - SIDE_PANEL_WIDTH
         max_h = screen_h * 0.85
         
@@ -703,7 +750,6 @@ def run_game(selected_idx, hints_enabled):
         GRID_OFFSET_X = int(grid_w * 0.05)
         GRID_OFFSET_Y = int(grid_h * 0.05)
         
-        # --- ИЗМЕНЕНИЕ: Добавляем ширину панели к окну ---
         WINDOW_WIDTH = grid_w + GRID_OFFSET_X * 2 + SIDE_PANEL_WIDTH
         WINDOW_HEIGHT = grid_h + GRID_OFFSET_Y * 2
         
@@ -716,7 +762,6 @@ def run_game(selected_idx, hints_enabled):
         dev_recording.clear()
         path_positions = [tuple(player_pos)]
         
-        # Сброс истории при загрузке нового уровня
         state_manager.reset()
         
         poison_data = lvl.get("poison", [])[:]
@@ -744,8 +789,9 @@ def run_game(selected_idx, hints_enabled):
             condition_cells = get_condition_cells(lvl, GRID_COLS, GRID_ROWS)
         
         name = lvl.get("name", f"Уровень {idx + 1}")
-        pygame.display.set_caption(f"{name} ({GRID_COLS}x{GRID_ROWS})")
-        print(f"\n{'='*40}\n--- {name} ---\nТип: {level_type}")
+        mode_prefix = "[EDIT] " if editor_mode else ""
+        pygame.display.set_caption(f"{mode_prefix}{name} ({GRID_COLS}x{GRID_ROWS})")
+        print(f"\n{'='*40}\n--- {mode_prefix}{name} ---\nТип: {level_type}")
         if hints_enabled and "hint" in lvl: print(f"Подсказка: {lvl['hint']}")
         print(f"{'='*40}\n")
 
@@ -779,7 +825,20 @@ def run_game(selected_idx, hints_enabled):
                     show_requirements = not show_requirements
                     continue
                 
-                # --- ИЗМЕНЕНИЕ: Savestates Binds ---
+                # --- НОВЫЙ: Перезагрузка уровня в режиме редактирования ---
+                if event.key == pygame.K_RETURN and editor_mode:
+                    new_levels = editor.reload_edit_level(process_level_data)
+                    if new_levels:
+                        LEVELS = new_levels
+                        current_idx = 0
+                        load_level(current_idx)
+                        font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
+                        font_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
+                        font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
+                        font_req = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+                    continue
+                # --------------------------------------------------------
+                
                 if event.key == pygame.K_s:
                     state_manager.save_manual(player_pos, path_positions, player_history, dev_recording)
                     continue
@@ -801,7 +860,6 @@ def run_game(selected_idx, hints_enabled):
                         player_history = data['hist']
                         dev_recording = data['dev']
                     continue
-                # -----------------------------------
 
                 dx, dy, move = 0, 0, None
                 if event.key == pygame.K_UP:    dx, dy, move = 0, -1, "u"
@@ -824,9 +882,7 @@ def run_game(selected_idx, hints_enabled):
                         continue
 
                     if in_bounds and not blocked:
-                        # --- ИЗМЕНЕНИЕ: Сохраняем состояние перед ходом ---
                         state_manager.push(player_pos, path_positions, player_history, dev_recording)
-                        # --------------------------------------------------
                         player_pos = target
 
                     player_history.append(move)
@@ -848,21 +904,25 @@ def run_game(selected_idx, hints_enabled):
                             print("[DEV] Победа OFF")
                         else:
                             print(f"✓ Уровень {current_idx + 1} пройден!")
-                            current_idx += 1
-                            if current_idx < len(LEVELS):
-                                load_level(current_idx)
-                                font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
-                                font_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
-                                font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
-                                font_req = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+                            
+                            # --- ИЗМЕНЕНИЕ: В режиме редактирования не переходим на следующий уровень ---
+                            if editor_mode:
+                                print("[EDITOR] Уровень пройден! Нажмите R для сброса или Enter для перезагрузки файла.")
                             else:
-                                print("\n🎉 ИГРА ПРОЙДЕНА! 🎉")
-                                game_running = False
+                                current_idx += 1
+                                if current_idx < len(LEVELS):
+                                    load_level(current_idx)
+                                    font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
+                                    font_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
+                                    font_coords = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 3), bold=True)
+                                    font_req = pygame.font.SysFont("Arial", max(12, CELL_SIZE // 4), bold=True)
+                                else:
+                                    print("\n🎉 ИГРА ПРОЙДЕНА! 🎉")
+                                    game_running = False
 
         screen.fill(COLOR_BG)
         game_surface.fill(COLOR_BG)
         
-        # --- 1. СНАЧАЛА ЦВЕТНЫЕ ФОНЫ ---
         if level_type == "condition":
             for cell in condition_cells:
                 pygame.draw.rect(game_surface, COLOR_CONDITION_HINT,
@@ -872,14 +932,10 @@ def run_game(selected_idx, hints_enabled):
             pygame.draw.rect(game_surface, COLOR_TARGET,
                 (target_grid_pos[0] * CELL_SIZE, target_grid_pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
 
-        # --- 2. ЗАТЕМ СЕТКА ---
         draw_grid(game_surface, GRID_COLS * CELL_SIZE, GRID_ROWS * CELL_SIZE, CELL_SIZE)
-        
-        # --- 3. ЗАТЕМ СТЕНЫ И ЯД ---
         draw_barriers(game_surface, walls_data, COLOR_WALL, CELL_SIZE)
         draw_barriers(game_surface, poison_data, COLOR_POISON, CELL_SIZE)
 
-        # --- 4. ТЕКСТ ШАГОВ НА ПУТИ ---
         if not (show_requirements and (level_requirements or global_requirements)):
             cell_data = {}
             for step, pos in enumerate(path_positions):
@@ -892,16 +948,13 @@ def run_game(selected_idx, hints_enabled):
                     game_surface.blit(ts, (pos[0] * CELL_SIZE + 2 + (i % 3) * (CELL_SIZE // 3),
                                            pos[1] * CELL_SIZE + 2 + (i // 3) * (CELL_SIZE // 3)))
 
-        # --- 5. ИГРОК ---
         px = player_pos[0] * CELL_SIZE + CELL_SIZE // 2
         py = player_pos[1] * CELL_SIZE + CELL_SIZE // 2
         pygame.draw.circle(game_surface, COLOR_PLAYER, (px, py), int(CELL_SIZE * 0.4))
 
-        # --- 6. ТРЕБОВАНИЯ (Поверх всего) ---
         if show_requirements and level_requirements:
             draw_requirements(game_surface, level_requirements, CELL_SIZE)
 
-        # --- 7. DEV KOORDINATY ---
         if dev_show_coords:
             f_coords = get_font(max(12, CELL_SIZE // 3), bold=True)
             for gy in range(GRID_ROWS):
@@ -910,15 +963,18 @@ def run_game(selected_idx, hints_enabled):
                     game_surface.blit(ts, ((gx + 1) * CELL_SIZE - ts.get_width() - 3,
                                            (gy + 1) * CELL_SIZE - ts.get_height() - 3))
 
-        # Отрисовка игрового поля
         screen.blit(game_surface, (GRID_OFFSET_X, GRID_OFFSET_Y))
 
-        # --- ИЗМЕНЕНИЕ: Глобальные требования теперь рисуются в панели справа ---
         if show_requirements and global_requirements:
             panel_x = WINDOW_WIDTH - SIDE_PANEL_WIDTH
             draw_global_requirements(screen, global_requirements, 
                                      get_font(max(12, CELL_SIZE // 4), bold=True), 
                                      panel_x)
+
+        # --- НОВЫЙ: Индикатор режима редактирования ---
+        if editor_mode:
+            panel_x = WINDOW_WIDTH - SIDE_PANEL_WIDTH
+            draw_editor_indicator(screen, panel_x, WINDOW_HEIGHT)
 
         pygame.display.flip()
         clock.tick(60)
@@ -926,33 +982,69 @@ def run_game(selected_idx, hints_enabled):
     pygame.quit()
     sys.exit()
 
+# =============================================================================
+# ТОЧКА ВХОДА
+# =============================================================================
+
 if __name__ == "__main__":
-    print("\n" + "=" * 40 + "\n     GRID PUZZLE GAME\n" + "=" * 40)
+    print("\n" + "=" * 50)
+    print("          GRID PUZZLE GAME")
+    print("=" * 50)
     
-    check = input("Загрузить user_levels.json? (y): ").strip().lower()
+    print("\nВыберите режим:")
+    print("  1 - Загрузить levels.json (основные уровни)")
+    print("  2 - Загрузить user_levels.json (пользовательские)")
+    print("  3 - Режим редактирования (edit_user_level.json)")
+    print()
     
-    if check in ("да", "yes", "y"):
+    mode = input("Ваш выбор (1/2/3): ").strip()
+    
+    edit_mode = False
+    
+    if mode == "3":
+        # Режим редактирования
+        edit_mode = True
+        editor.print_editor_help()
+        
+        LEVELS = editor.reload_edit_level(process_level_data)
+        if not LEVELS:
+            print("\n[EDITOR] Создан шаблон. Отредактируйте edit_user_level.json и перезапустите.")
+            LEVELS = editor.reload_edit_level(process_level_data)
+        
+        if LEVELS:
+            hints = True  # В режиме редактирования подсказки включены
+            run_game(0, hints, edit_mode_enabled=True)
+        else:
+            print("[ERROR] Не удалось загрузить уровень для редактирования.")
+            sys.exit(1)
+    
+    elif mode == "2":
+        # Пользовательские уровни
         if os.path.exists("user_levels.json"):
             LEVELS = load_levels_from_file("user_levels.json", is_internal=False)
         if not LEVELS:
+            print("[ERROR] user_levels.json не найден или пуст. Загружаю levels.json...")
             LEVELS = load_levels_from_file("levels.json", is_internal=True)
+    
     else:
+        # Основные уровни (по умолчанию)
         LEVELS = load_levels_from_file("levels.json", is_internal=True)
 
-    if not LEVELS:
-        print("Ошибка: нет уровней.")
-        sys.exit(1)
+    if not edit_mode:
+        if not LEVELS:
+            print("Ошибка: нет уровней.")
+            sys.exit(1)
 
-    hints = input("Подсказки? (y): ").strip().lower() in ("да", "yes", "y")
-    
-    print(f"\nУровней: {len(LEVELS)}")
-    for i, lvl in enumerate(LEVELS):
-        t = "SEQ" if lvl.get("type") == "sequence" else "COND"
-        print(f"  {i+1}. [{t}] {lvl.get('name', f'Уровень {i+1}')}")
-    
-    try:
-        choice = input(f"\nВыбор (1-{len(LEVELS)}): ").strip()
-        idx = int(choice) - 1 if choice else 0
-        run_game(max(0, min(idx, len(LEVELS) - 1)), hints)
-    except ValueError:
-        run_game(0, hints)
+        hints = input("Подсказки? (y): ").strip().lower() in ("да", "yes", "y")
+        
+        print(f"\nУровней: {len(LEVELS)}")
+        for i, lvl in enumerate(LEVELS):
+            t = "SEQ" if lvl.get("type") == "sequence" else "COND"
+            print(f"  {i+1}. [{t}] {lvl.get('name', f'Уровень {i+1}')}")
+        
+        try:
+            choice = input(f"\nВыбор (1-{len(LEVELS)}): ").strip()
+            idx = int(choice) - 1 if choice else 0
+            run_game(max(0, min(idx, len(LEVELS) - 1)), hints)
+        except ValueError:
+            run_game(0, hints)
