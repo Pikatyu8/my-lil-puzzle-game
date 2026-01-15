@@ -3,8 +3,9 @@ import sys
 import threading
 import json
 import os
+# из проекта
 import savestates
-import editor  # <-- НОВЫЙ ИМПОРТ
+import editor
 
 # --- ЦВЕТА ---
 COLOR_BG = (0, 0, 0)
@@ -60,16 +61,105 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def process_level_data(data):
-    """Обрабатывает данные уровней."""
+    """Обрабатывает данные уровней с расширенной поддержкой диапазонов и периметров."""
     SIDE_MAP = {
         'u': 'up', 'd': 'down', 'l': 'left', 'r': 'right',
         'up': 'up', 'down': 'down', 'left': 'left', 'right': 'right'
     }
 
-    for lvl in data:
-        if "grid" in lvl: lvl["grid"] = tuple(lvl["grid"])
-        if "start" in lvl: lvl["start"] = tuple(lvl["start"])
+    def generate_line_cells(start, end):
+        """Генерирует все клетки в прямоугольнике между двумя точками."""
+        x1, y1 = start
+        x2, y2 = end
+        cells = []
+        for x in range(min(x1, x2), max(x1, x2) + 1):
+            for y in range(min(y1, y2), max(y1, y2) + 1):
+                cells.append((x, y))
+        return cells
+
+    def generate_perimeter(start, end, sides="lrud"):
+        """
+        Генерирует стены по периметру прямоугольника.
+        sides: строка с направлениями (l=left, r=right, u=up, d=down)
+        Возвращает список кортежей ((x, y), 'side_name')
+        """
+        x1, y1 = min(start[0], end[0]), min(start[1], end[1])
+        x2, y2 = max(start[0], end[0]), max(start[1], end[1])
         
+        result = []
+        
+        # l - левая сторона периметра (стены слева у левого столбца)
+        if 'l' in sides:
+            for y in range(y1, y2 + 1):
+                result.append(((x1, y), 'left'))
+        
+        # r - правая сторона периметра (стены справа у правого столбца)
+        if 'r' in sides:
+            for y in range(y1, y2 + 1):
+                result.append(((x2, y), 'right'))
+        
+        # u - верхняя сторона периметра (стены сверху у верхнего ряда)
+        if 'u' in sides:
+            for x in range(x1, x2 + 1):
+                result.append(((x, y1), 'up'))
+        
+        # d - нижняя сторона периметра (стены снизу у нижнего ряда)
+        if 'd' in sides:
+            for x in range(x1, x2 + 1):
+                result.append(((x, y2), 'down'))
+        
+        return result
+
+    def is_range_format(raw_target):
+        """Проверяет, является ли формат диапазоном [[x1,y1], [x2,y2]]."""
+        if not isinstance(raw_target, list) or len(raw_target) != 2:
+            return False
+        p1, p2 = raw_target
+        return (isinstance(p1, list) and isinstance(p2, list) and
+                len(p1) == 2 and len(p2) == 2 and
+                isinstance(p1[0], (int, float)) and isinstance(p1[1], (int, float)) and
+                isinstance(p2[0], (int, float)) and isinstance(p2[1], (int, float)))
+
+    def parse_sides_from_key(sides_key):
+        """Парсит стороны из ключа (например, 'ud' -> ['up', 'down'])."""
+        if sides_key in ["square", "all", "box"]:
+            return ["up", "down", "left", "right"]
+        elif sides_key in SIDE_MAP:
+            return [SIDE_MAP[sides_key]]
+        else:
+            result = []
+            for char in sides_key:
+                if char in SIDE_MAP:
+                    result.append(SIDE_MAP[char])
+            return result
+
+    def find_perimeter_sides(modes):
+        """Находит строку с направлениями периметра в modes."""
+        for m in modes:
+            if isinstance(m, str) and m not in ["perimeter", "standart", "standard", "line", "fill"]:
+                if all(c in "lrud" for c in m) and m:
+                    return m
+        return "lrud"  # По умолчанию все 4 стороны
+
+    def get_barrier_type(sides_dict):
+        """Извлекает тип барьера из словаря."""
+        # Сначала проверяем пустой ключ
+        if "" in sides_dict and sides_dict[""] in ["inner", "outer", "both"]:
+            return sides_dict[""]
+        # Затем ищем в других ключах
+        for key, val in sides_dict.items():
+            if key != "modes" and val in ["inner", "outer", "both"]:
+                return val
+        return "both"
+
+    # === ОСНОВНАЯ ОБРАБОТКА ===
+    for lvl in data:
+        if "grid" in lvl:
+            lvl["grid"] = tuple(lvl["grid"])
+        if "start" in lvl:
+            lvl["start"] = tuple(lvl["start"])
+        
+        # Обработка conditions
         if "conditions" in lvl:
             for cond in lvl["conditions"]:
                 if "cells" in cond:
@@ -79,34 +169,66 @@ def process_level_data(data):
                     elif isinstance(c, list):
                         cond["cells"] = [tuple(item) for item in c]
         
+        # Обработка poison и walls
         for key in ["poison", "walls"]:
-            if key in lvl:
-                processed = []
-                for item in lvl[key]:
-                    raw_target = item[0]
-                    sides_dict = item[1]
+            if key not in lvl:
+                continue
+                
+            processed = []
+            
+            for item in lvl[key]:
+                raw_target = item[0]
+                sides_dict = item[1]
+                modes = sides_dict.get("modes", [])
+                
+                # === НОВЫЙ ФОРМАТ: Диапазон [[x1,y1], [x2,y2]] ===
+                if is_range_format(raw_target):
+                    start_coord = tuple(raw_target[0])
+                    end_coord = tuple(raw_target[1])
                     
+                    # --- РЕЖИМ ПЕРИМЕТРА ---
+                    if "perimeter" in modes:
+                        perimeter_sides = find_perimeter_sides(modes)
+                        b_type = get_barrier_type(sides_dict)
+                        
+                        for coords, side in generate_perimeter(start_coord, end_coord, perimeter_sides):
+                            processed.append((coords, side, b_type))
+                    
+                    # --- СТАНДАРТНЫЙ РЕЖИМ (линия/заливка) ---
+                    else:
+                        cells = generate_line_cells(start_coord, end_coord)
+                        
+                        for sides_key, b_type in sides_dict.items():
+                            if sides_key == "modes":
+                                continue
+                            if b_type not in ["inner", "outer", "both"]:
+                                continue
+                            
+                            target_sides = parse_sides_from_key(sides_key)
+                            
+                            for coords in cells:
+                                for s in target_sides:
+                                    processed.append((coords, s, b_type))
+                
+                # === СТАРЫЙ ФОРМАТ: Одиночная координата или список ===
+                else:
                     if isinstance(raw_target[0], list):
                         targets = [tuple(c) for c in raw_target]
                     else:
                         targets = [tuple(raw_target)]
                     
                     for sides_key, b_type in sides_dict.items():
-                        target_sides = []
-                        if sides_key in ["square", "all", "box"]:
-                            target_sides = ["up", "down", "left", "right"]
-                        elif sides_key in SIDE_MAP:
-                            target_sides = [SIDE_MAP[sides_key]]
-                        else:
-                            for char in sides_key:
-                                if char in SIDE_MAP:
-                                    target_sides.append(SIDE_MAP[char])
+                        if sides_key == "modes":
+                            continue
+                        
+                        target_sides = parse_sides_from_key(sides_key)
                         
                         for coords in targets:
                             for s in target_sides:
                                 processed.append((coords, s, b_type))
-                    
-                lvl[key] = processed
+                
+            lvl[key] = processed
+    
     return data
 
 def load_levels_from_file(filename, is_internal=True):
