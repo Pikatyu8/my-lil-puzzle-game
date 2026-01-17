@@ -6,6 +6,7 @@ import os
 # из проекта
 import savestates
 import editor
+import movable
 
 # --- ЦВЕТА ---
 COLOR_BG = (0, 0, 0)
@@ -69,12 +70,6 @@ class BarrierParser:
     
     @classmethod
     def parse_sides(cls, sides_str):
-        """
-        Парсит строку сторон.
-        "all" / "lrud" → все стороны
-        "ud" → up, down
-        "l" → left
-        """
         if not sides_str or sides_str in ["all", "box", "square", "lrud", "udlr"]:
             return cls.ALL_SIDES[:]
         
@@ -88,7 +83,6 @@ class BarrierParser:
     
     @classmethod
     def generate_rect_cells(cls, start, end):
-        """Генерирует все клетки в прямоугольнике."""
         x1, y1 = int(start[0]), int(start[1])
         x2, y2 = int(end[0]), int(end[1])
         return [
@@ -99,7 +93,6 @@ class BarrierParser:
     
     @classmethod
     def generate_perimeter(cls, start, end, sides):
-        """Генерирует стены по периметру прямоугольника."""
         x1 = min(int(start[0]), int(end[0]))
         y1 = min(int(start[1]), int(end[1]))
         x2 = max(int(start[0]), int(end[0]))
@@ -118,36 +111,17 @@ class BarrierParser:
     
     @classmethod
     def is_new_format(cls, item):
-        """Проверяет, использует ли элемент новый формат."""
         return isinstance(item, dict) and any(
             key in item for key in ["cell", "cells", "range", "ranges", "type", "sides", "mode"]
         )
     
     @classmethod
     def is_coord(cls, item):
-        """Проверяет, является ли item координатой [x, y]."""
         return (isinstance(item, list) and len(item) == 2 and
                 isinstance(item[0], (int, float)) and isinstance(item[1], (int, float)))
     
     @classmethod
     def parse_item(cls, item, default_type="both"):
-        """
-        Парсит один элемент барьера.
-        
-        НОВЫЙ ФОРМАТ (рекомендуется):
-        {
-            "cell": [x, y],           # одна ячейка
-            "cells": [[x,y], ...],    # несколько ячеек
-            "range": [[x1,y1], [x2,y2]],    # диапазон
-            "ranges": [[[x1,y1],[x2,y2]], ...],  # несколько диапазонов
-            "sides": "all" / "ud" / "lr" / "lrud" / "u" / "d" / "l" / "r",
-            "mode": "fill" / "perimeter",   # fill по умолчанию
-            "type": "both" / "inner" / "outer",
-            "except": [...]   # исключения (тот же формат)
-        }
-        
-        Возвращает: список кортежей (cell, side, barrier_type)
-        """
         if not isinstance(item, dict):
             return []
         
@@ -157,34 +131,28 @@ class BarrierParser:
         sides_str = item.get("sides", "all")
         sides = cls.parse_sides(sides_str)
         
-        # Собираем все targets
         targets = []
         
-        # Одиночная ячейка
         if "cell" in item:
             c = item["cell"]
             targets.append(("cell", (int(c[0]), int(c[1]))))
         
-        # Массив ячеек
         if "cells" in item:
             for c in item["cells"]:
                 targets.append(("cell", (int(c[0]), int(c[1]))))
         
-        # Один диапазон
         if "range" in item:
             r = item["range"]
             targets.append(("range", 
                            (int(r[0][0]), int(r[0][1])),
                            (int(r[1][0]), int(r[1][1]))))
         
-        # Несколько диапазонов
         if "ranges" in item:
             for r in item["ranges"]:
                 targets.append(("range",
                                (int(r[0][0]), int(r[0][1])),
                                (int(r[1][0]), int(r[1][1]))))
         
-        # Обрабатываем исключения
         except_set = set()
         if "except" in item:
             for exc in item["except"]:
@@ -192,7 +160,6 @@ class BarrierParser:
                     for coords, side, _ in cls.parse_item(exc, b_type):
                         except_set.add((coords, side))
         
-        # Генерируем стены
         for target in targets:
             if target[0] == "cell":
                 cell = target[1]
@@ -207,7 +174,7 @@ class BarrierParser:
                     for coords, side in cls.generate_perimeter(start, end, sides):
                         if (coords, side) not in except_set:
                             walls.append((coords, side, b_type))
-                else:  # fill
+                else:
                     for cell in cls.generate_rect_cells(start, end):
                         for side in sides:
                             if (cell, side) not in except_set:
@@ -217,13 +184,6 @@ class BarrierParser:
     
     @classmethod
     def parse_legacy_item(cls, item):
-        """
-        Парсит элемент в СТАРОМ формате для обратной совместимости.
-        Старый формат: [[coords], {sides_dict}]
-        
-        Поддержка сторон периметра в modes:
-        {"": "both", "modes": ["perimeter", "ldr"]} → периметр только по left, down, right
-        """
         if not isinstance(item, list) or len(item) != 2:
             return []
         
@@ -235,20 +195,16 @@ class BarrierParser:
         modes = sides_dict.get("modes", [])
         except_spec = sides_dict.get("except", [])
         
-        # Определяем режим
         is_perimeter = "perimeter" in modes or "box" in modes
         
-        # ИСПРАВЛЕНИЕ: ищем стороны периметра в modes
         perimeter_sides_override = None
         if is_perimeter:
             for m in modes:
                 if m not in ["perimeter", "box", "fill", "standart", "standard"]:
-                    # Проверяем, похоже ли на строку сторон (только l, r, u, d)
                     if m and all(c.lower() in "lrud" for c in m):
                         perimeter_sides_override = cls.parse_sides(m)
                         break
         
-        # Парсим исключения (рекурсивно)
         except_set = set()
         for exc in except_spec:
             if cls.is_new_format(exc):
@@ -264,7 +220,6 @@ class BarrierParser:
                         for side in cls.ALL_SIDES:
                             except_set.add((cell, side))
         
-        # Определяем targets
         def is_range(r):
             return (isinstance(r, list) and len(r) == 2 and
                     cls.is_coord(r[0]) and cls.is_coord(r[1]))
@@ -286,17 +241,14 @@ class BarrierParser:
                     if cls.is_coord(c):
                         ranges.append((tuple(c), tuple(c)))
         
-        # Обрабатываем стороны
         for sides_key, b_type in sides_dict.items():
             if sides_key in ["modes", "except"]:
                 continue
             if b_type not in ["inner", "outer", "both"]:
                 continue
             
-            # Определяем стороны из ключа
             sides = cls.parse_sides(sides_key) if sides_key else cls.ALL_SIDES
             
-            # ИСПРАВЛЕНИЕ: для периметра используем стороны из modes, если указаны
             if is_perimeter and perimeter_sides_override is not None:
                 sides = perimeter_sides_override
             
@@ -318,16 +270,29 @@ def process_level_data(data):
     """Обрабатывает данные уровней с поддержкой нового и старого форматов."""
     
     for lvl in data:
-        # Конвертируем базовые поля
         if "grid" in lvl:
             lvl["grid"] = tuple(lvl["grid"])
         if "start" in lvl:
             lvl["start"] = tuple(lvl["start"])
         
-        # Обработка conditions
         if "conditions" in lvl:
             cols, rows = lvl.get("grid", (16, 12))
             for cond in lvl["conditions"]:
+                
+                # === НАЧАЛО ВСТАВКИ: Поддержка range в условиях ===
+                if "range" in cond:
+                    start, end = cond["range"]
+                    # Генерируем клетки прямоугольника
+                    generated_cells = BarrierParser.generate_rect_cells(start, end)
+                    
+                    # Если списка cells нет, создаем его
+                    if "cells" not in cond:
+                        cond["cells"] = []
+                    
+                    # Добавляем сгенерированные клетки в общий список
+                    cond["cells"].extend(generated_cells)
+                # === КОНЕЦ ВСТАВКИ ===
+
                 if "cells" in cond:
                     c = cond["cells"]
                     if isinstance(c, list) and len(c) > 0:
@@ -336,7 +301,6 @@ def process_level_data(data):
                         else:
                             cond["cells"] = [tuple(item) for item in c]
         
-        # Обработка poison и walls
         for key in ["poison", "walls"]:
             if key not in lvl:
                 continue
@@ -344,10 +308,8 @@ def process_level_data(data):
             processed = []
             for item in lvl[key]:
                 if BarrierParser.is_new_format(item):
-                    # НОВЫЙ формат
                     processed.extend(BarrierParser.parse_item(item))
                 else:
-                    # СТАРЫЙ формат (обратная совместимость)
                     processed.extend(BarrierParser.parse_legacy_item(item))
             
             lvl[key] = processed
@@ -382,7 +344,6 @@ def load_levels_from_file(filename, is_internal=True):
 _font_cache = {}
 
 def get_font(size, bold=False):
-    """Возвращает кэшированный шрифт с поддержкой Unicode."""
     key = (size, bold)
     if key not in _font_cache:
         font_names = ["Arial", "Segoe UI", "Tahoma", "DejaVu Sans", "Liberation Sans"]
@@ -402,6 +363,16 @@ def get_font(size, bold=False):
 # =============================================================================
 # УТИЛИТЫ
 # =============================================================================
+
+def dim_color(color, factor=0.4):
+    """Затемняет цвет, сохраняя его оттенок. Factor 1.0 = оригинал, 0.0 = черный."""
+    r, g, b = color[:3] # Берем только RGB, игнорируем Alpha если есть
+    return (
+        max(0, int(r * factor)),
+        max(0, int(g * factor)),
+        max(0, int(b * factor))
+    )
+
 
 def resolve_cells(cells_spec, grid_cols, grid_rows):
     if isinstance(cells_spec, list):
@@ -489,10 +460,175 @@ OPERATORS = {
 OP_SYMBOLS = {"==": "=", ">=": "≥", "<=": "≤", ">": ">", "<": "<", "!=": "≠"}
 
 # =============================================================================
+# ПРОВЕРКА ПОСЛЕДОВАТЕЛЬНОСТИ ХОДОВ
+# =============================================================================
+
+def normalize_moves(moves_spec):
+    """Нормализует спецификацию ходов в список."""
+    if isinstance(moves_spec, str):
+        mapping = {"up": "u", "down": "d", "left": "l", "right": "r"}
+        result = []
+        for m in moves_spec.lower().split():
+            if m in mapping:
+                result.append(mapping[m])
+            elif m in ["u", "d", "l", "r"]:
+                result.append(m)
+        return result
+    elif isinstance(moves_spec, list):
+        mapping = {"up": "u", "down": "d", "left": "l", "right": "r"}
+        return [mapping.get(m.lower(), m.lower()) for m in moves_spec 
+                if m.lower() in ["u", "d", "l", "r", "up", "down", "left", "right"]]
+    return []
+
+
+def count_sequence_occurrences(history, seq, overlapping=False):
+    """
+    Подсчитывает количество вхождений последовательности.
+    
+    Args:
+        history: список ходов игрока
+        seq: искомая последовательность
+        overlapping: разрешить перекрывающиеся вхождения
+    """
+    if not seq or len(seq) > len(history):
+        return 0
+    
+    count = 0
+    i = 0
+    while i <= len(history) - len(seq):
+        if history[i:i+len(seq)] == seq:
+            count += 1
+            i += 1 if overlapping else len(seq)
+        else:
+            i += 1
+    return count
+
+
+def check_sequence_match(history, seq, mode, min_count=1):
+    """
+    Проверяет соответствие последовательности.
+    
+    Args:
+        history: список ходов игрока
+        seq: искомая последовательность
+        mode: "contains", "exact", "starts_with", "ends_with", "not_contains"
+        min_count: минимальное количество вхождений (для contains)
+    """
+    if not seq:
+        return True
+    
+    if mode == "exact":
+        return history == seq
+    elif mode == "starts_with":
+        return len(history) >= len(seq) and history[:len(seq)] == seq
+    elif mode == "ends_with":
+        return len(history) >= len(seq) and history[-len(seq):] == seq
+    elif mode == "not_contains":
+        return count_sequence_occurrences(history, seq) == 0
+    else:  # contains (default)
+        return count_sequence_occurrences(history, seq) >= min_count
+
+
+def check_sequence_condition(cond, player_history):
+    """
+    Проверяет условие типа sequence.
+    
+    Форматы:
+    {
+        "check": "sequence",
+        "moves": "u d l r",              // одна последовательность
+        "mode": "contains",              // contains/exact/starts_with/ends_with/not_contains
+        "count": 1,                      // минимум вхождений (для contains)
+        "overlapping": false             // перекрывающиеся вхождения
+    }
+    
+    {
+        "check": "sequence",
+        "any": ["u u", "d d"],           // любая из последовательностей
+        "mode": "contains"
+    }
+    
+    {
+        "check": "sequence", 
+        "all": ["u d", "l r"],           // все последовательности
+        "mode": "contains"
+    }
+    """
+    mode = cond.get("mode", "contains")
+    min_count = cond.get("count", 1)
+    overlapping = cond.get("overlapping", False)
+    
+    # Множественные последовательности - any
+    if "any" in cond:
+        sequences = cond["any"]
+        for seq_spec in sequences:
+            seq = normalize_moves(seq_spec)
+            if mode == "contains":
+                if count_sequence_occurrences(player_history, seq, overlapping) >= min_count:
+                    return True
+            elif check_sequence_match(player_history, seq, mode, min_count):
+                return True
+        return False
+    
+    # Множественные последовательности - all
+    if "all" in cond:
+        sequences = cond["all"]
+        for seq_spec in sequences:
+            seq = normalize_moves(seq_spec)
+            if mode == "contains":
+                if count_sequence_occurrences(player_history, seq, overlapping) < min_count:
+                    return False
+            elif not check_sequence_match(player_history, seq, mode, min_count):
+                return False
+        return True
+    
+    # Одиночная последовательность
+    seq = normalize_moves(cond.get("moves", ""))
+    if not seq:
+        return True
+    
+    if mode == "contains":
+        return count_sequence_occurrences(player_history, seq, overlapping) >= min_count
+    return check_sequence_match(player_history, seq, mode, min_count)
+
+
+def format_sequence_requirement(cond):
+    """Форматирует требование sequence для отображения."""
+    mode = cond.get("mode", "contains")
+    count = cond.get("count", 1)
+    
+    mode_symbols = {
+        "contains": "∋",
+        "exact": "≡", 
+        "starts_with": "→",
+        "ends_with": "←",
+        "not_contains": "∌"
+    }
+    symbol = mode_symbols.get(mode, "")
+    
+    def format_moves(moves_spec):
+        moves = normalize_moves(moves_spec)
+        arrows = {"u": "↑", "d": "↓", "l": "←", "r": "→"}
+        return "".join(arrows.get(m, m) for m in moves)
+    
+    if "any" in cond:
+        seqs = [format_moves(s) for s in cond["any"]]
+        return f"{symbol}({'/'.join(seqs)})"
+    elif "all" in cond:
+        seqs = [format_moves(s) for s in cond["all"]]
+        return f"{symbol}[{'&'.join(seqs)}]"
+    else:
+        seq = format_moves(cond.get("moves", ""))
+        if count > 1:
+            return f"{symbol}{seq}×{count}"
+        return f"{symbol}{seq}"
+
+# =============================================================================
 # ПРОВЕРКА УСЛОВИЙ
 # =============================================================================
 
-def check_condition(cond, path, player_pos, cols, rows):
+def check_condition(cond, path, player_pos, cols, rows, player_history=None):
+    """Проверяет одно условие. player_history нужен для check=sequence."""
     check = cond.get("check", "")
     cells = resolve_cells(cond.get("cells", []), cols, rows)
     match = cond.get("match", "all")
@@ -500,12 +636,19 @@ def check_condition(cond, path, player_pos, cols, rows):
     if check == "group":
         logic = cond.get("logic", "AND").upper()
         items = cond.get("items", [])
-        results = [check_condition(item, path, player_pos, cols, rows) for item in items]
+        results = [check_condition(item, path, player_pos, cols, rows, player_history) 
+                   for item in items]
         if logic == "AND": return all(results)
         elif logic == "OR": return any(results)
         elif logic == "NOT": return not results[0] if results else True
         elif logic == "XOR": return sum(results) == 1
         return False
+    
+    # НОВОЕ: проверка последовательности ходов
+    if check == "sequence":
+        if player_history is None:
+            return False
+        return check_sequence_condition(cond, player_history)
     
     if check == "visit":
         visit_counts = {}
@@ -604,12 +747,13 @@ def check_condition(cond, path, player_pos, cols, rows):
     
     return False
 
-def check_all_conditions(conditions, path, player_pos, cols, rows):
-    return all(check_condition(c, path, player_pos, cols, rows) for c in conditions)
+
+def check_all_conditions(conditions, path, player_pos, cols, rows, player_history=None):
+    return all(check_condition(c, path, player_pos, cols, rows, player_history) 
+               for c in conditions)
+
 
 def get_condition_cells(level_data, cols, rows):
-    if level_data.get("type") != "condition":
-        return []
     cells = set()
     def extract(cond):
         if "cells" in cond:
@@ -626,9 +770,6 @@ def get_condition_cells(level_data, cols, rows):
 # =============================================================================
 
 def get_condition_requirements(level_data, cols, rows):
-    if level_data.get("type") != "condition":
-        return {}, []
-    
     requirements = {}
     global_reqs = []
     
@@ -646,6 +787,11 @@ def get_condition_requirements(level_data, cols, rows):
         
         if check == "group":
             for item in cond.get("items", []): process(item)
+            return
+        
+        if check == "sequence":
+            text = format_sequence_requirement(cond)
+            add_global(f"Ходы: {text}", "sequence")
             return
         
         if check == "visit":
@@ -720,9 +866,37 @@ def is_path_clear(current_pos, next_pos, barriers_data):
             return False
     return True
 
+
 # =============================================================================
 # ОТРИСОВКА
 # =============================================================================
+
+def dim_color(color, factor=0.4):
+    """
+    Затемняет цвет, сохраняя его оттенок. 
+    Factor 1.0 = оригинал, 0.4 = темный, 0.0 = черный.
+    """
+    r, g, b = color[:3]
+    return (
+        max(0, int(r * factor)),
+        max(0, int(g * factor)),
+        max(0, int(b * factor))
+    )
+
+def draw_player(surface, player_pos, cell_size, dim=False):
+    """Отрисовывает игрока. Если dim=True, цвет затемняется."""
+    px = player_pos[0] * cell_size + cell_size // 2
+    py = player_pos[1] * cell_size + cell_size // 2
+    radius = int(cell_size * 0.4)
+    
+    # Затемняем цвет при необходимости
+    color = dim_color(COLOR_PLAYER, 0.4) if dim else COLOR_PLAYER
+    
+    pygame.draw.circle(surface, color, (px, py), radius)
+    
+    # Если затемнено, добавляем легкую обводку для контраста
+    if dim:
+        pygame.draw.circle(surface, (80, 80, 80), (px, py), radius, 1)
 
 def draw_grid(surface, width, height, cell_size):
     for x in range(0, width + 1, cell_size):
@@ -770,9 +944,11 @@ def draw_requirements(surface, requirements, cell_size):
         x, y = pos
         base_x, base_y = x * cell_size, y * cell_size
         
-        overlay = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 100))
-        surface.blit(overlay, (base_x, base_y))
+        # --- ИСПРАВЛЕНИЕ: УБРАЛИ ЧЕРНЫЙ ОВЕРЛЕЙ ---
+        # overlay = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
+        # overlay.fill((0, 0, 0, 100))
+        # surface.blit(overlay, (base_x, base_y))
+        # ------------------------------------------
         
         for i, req in enumerate(reqs[:9]):
             text, req_type = req["text"], req["type"]
@@ -825,10 +1001,18 @@ def draw_requirements(surface, requirements, cell_size):
                 ts = font.render(display_text, True, color)
                 surface.blit(ts, ts.get_rect(center=(cx, cy)))
 
+
 def draw_global_requirements(surface, global_reqs, font, panel_x_start):
     y = 10
     for req in global_reqs:
-        color = COLOR_GLOBAL_REQ if req["type"] == "steps" else (200, 200, 200)
+        req_type = req.get("type", "global")
+        if req_type == "steps":
+            color = COLOR_GLOBAL_REQ
+        elif req_type == "sequence":
+            color = (180, 150, 255)  # Фиолетовый для sequence
+        else:
+            color = (200, 200, 200)
+        
         ts = font.render(req["text"], True, color)
         tr = ts.get_rect(topleft=(panel_x_start + 10, y))
         bg = tr.inflate(10, 6)
@@ -838,8 +1022,8 @@ def draw_global_requirements(surface, global_reqs, font, panel_x_start):
         surface.blit(ts, tr)
         y += tr.height + 10
 
+
 def draw_editor_indicator(surface, panel_x_start, panel_height):
-    """Рисует индикатор режима редактирования."""
     try:
         font = pygame.font.SysFont("arial", 14, bold=True)
         hint_font = pygame.font.SysFont("arial", 11)
@@ -862,6 +1046,7 @@ def draw_editor_indicator(surface, panel_x_start, panel_height):
     hint = hint_font.render("Enter - reload level", True, (180, 100, 180))
     surface.blit(hint, (x, y + 22))
 
+
 def calculate_target_pos(start, ans_str, cols, rows):
     x, y = start
     mapping = {"u": (0, -1), "d": (0, 1), "l": (-1, 0), "r": (1, 0)}
@@ -871,6 +1056,7 @@ def calculate_target_pos(start, ans_str, cols, rows):
             if 0 <= x + dx < cols and 0 <= y + dy < rows:
                 x, y = x + dx, y + dy
     return (x, y)
+
 
 def normalize_ans(ans_str):
     mapping = {"up": "u", "u": "u", "down": "d", "d": "d", "left": "l", "l": "l", "right": "r", "r": "r"}
@@ -940,11 +1126,9 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
     clock = pygame.time.Clock()
 
     player_pos = [0, 0]
-    required_sequence = []
     player_history = []
     path_positions = []
     target_grid_pos = None
-    level_type = "sequence"
     level_conditions = []
     condition_cells = []
     poison_data = []
@@ -953,21 +1137,20 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
     level_requirements = {}
     global_requirements = []
     
+    # Менеджер movable объектов
+    movable_manager = movable.MovableManager()
+    
     state_manager = savestates.StateManager(max_history=200)
 
     console_thread = threading.Thread(target=console_listener, daemon=True)
     console_thread.start()
 
     def load_level(idx, clear_history=True):
-        """
-        Загружает уровень.
-        clear_history=True  — полный сброс (Shift+R, новый уровень)
-        clear_history=False — мягкий сброс (R, смерть) — история сохраняется
-        """
-        nonlocal player_pos, required_sequence, player_history, target_grid_pos
-        nonlocal level_type, level_conditions, condition_cells, poison_data, walls_data
+        nonlocal player_pos, player_history, target_grid_pos
+        nonlocal level_conditions, condition_cells, poison_data, walls_data
         nonlocal screen, game_surface, GRID_OFFSET_X, GRID_OFFSET_Y
         nonlocal show_requirements, level_requirements, global_requirements
+        nonlocal movable_manager
         global dev_recording, path_positions
         global WINDOW_WIDTH, WINDOW_HEIGHT, CELL_SIZE, GRID_COLS, GRID_ROWS
 
@@ -989,13 +1172,11 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
         screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         game_surface = pygame.Surface((grid_w + 1, grid_h + 1), pygame.SRCALPHA)
         
-        level_type = lvl.get("type", "sequence")
         player_pos = list(lvl["start"])
         player_history = []
         dev_recording.clear()
         path_positions = [tuple(player_pos)]
         
-        # Очищаем историю только при полном ресете
         if clear_history:
             state_manager.reset()
             print("[RESET] Полный сброс (история очищена)")
@@ -1004,6 +1185,12 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
         
         poison_data = lvl.get("poison", [])[:]
         walls_data = lvl.get("walls", [])[:]
+        
+        # Загружаем movable объекты
+        if "movable" in lvl:
+            movable_manager = movable.parse_movable_data(lvl.get("movable", []))
+        else:
+            movable_manager.clear()
 
         if lvl.get("wall_is_poison"):
             flag = lvl["wall_is_poison"]
@@ -1017,24 +1204,38 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
         show_requirements = True
         level_requirements, global_requirements = get_condition_requirements(lvl, GRID_COLS, GRID_ROWS)
         
-        if level_type == "sequence":
-            required_sequence = normalize_ans(lvl.get("ans", ""))
-            target_grid_pos = calculate_target_pos(lvl["start"], lvl.get("ans", ""), GRID_COLS, GRID_ROWS)
-            level_conditions, condition_cells = [], []
+        # Все уровни теперь используют conditions
+        level_conditions = lvl.get("conditions", [])
+        condition_cells = get_condition_cells(lvl, GRID_COLS, GRID_ROWS)
+        
+        # Обратная совместимость со старым type="sequence"
+        if lvl.get("type") == "sequence" and "ans" in lvl:
+            # Преобразуем в условие sequence
+            ans_moves = lvl.get("ans", "")
+            target_grid_pos = calculate_target_pos(lvl["start"], ans_moves, GRID_COLS, GRID_ROWS)
+            # Добавляем условия для обратной совместимости
+            if not any(c.get("check") == "sequence" for c in level_conditions):
+                level_conditions.append({
+                    "check": "sequence",
+                    "moves": ans_moves,
+                    "mode": "exact"
+                })
+            if not any(c.get("check") == "end_at" for c in level_conditions):
+                level_conditions.append({
+                    "check": "end_at",
+                    "cells": [list(target_grid_pos)]
+                })
         else:
-            required_sequence, target_grid_pos = [], None
-            level_conditions = lvl.get("conditions", [])
-            condition_cells = get_condition_cells(lvl, GRID_COLS, GRID_ROWS)
+            target_grid_pos = None
         
         name = lvl.get("name", f"Уровень {idx + 1}")
         mode_prefix = "[EDIT] " if editor_mode else ""
         pygame.display.set_caption(f"{mode_prefix}{name} ({GRID_COLS}x{GRID_ROWS})")
-        print(f"\n{'='*40}\n--- {mode_prefix}{name} ---\nТип: {level_type}")
+        print(f"\n{'='*40}\n--- {mode_prefix}{name} ---")
         if hints_enabled and "hint" in lvl: print(f"Подсказка: {lvl['hint']}")
         print(f"{'='*40}\n")
 
     def reload_fonts():
-        """Пересоздаёт шрифты после изменения размера сетки."""
         nonlocal font_steps, font_small, font_coords, font_req
         font_steps = pygame.font.SysFont("Arial", max(10, CELL_SIZE // 4))
         font_small = pygame.font.SysFont("Arial", max(8, CELL_SIZE // 5))
@@ -1054,24 +1255,20 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
             if event.type == pygame.KEYDOWN:
                 keys = pygame.key.get_pressed()
                 
-                # Dev-режим
                 if keys[pygame.K_F9] and keys[pygame.K_F11]:
                     dev_access_granted = True
                     print("\n[DEV] Активировано!\n")
 
-                # R = мягкий ресет, Shift+R = полный ресет
                 if event.key == pygame.K_r:
                     full_reset = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
                     load_level(current_idx, clear_history=full_reset)
                     reload_fonts()
                     continue
                 
-                # X = показать/скрыть требования
                 if event.key == pygame.K_x:
                     show_requirements = not show_requirements
                     continue
                 
-                # Enter в режиме редактора = перезагрузить файл
                 if event.key == pygame.K_RETURN and editor_mode:
                     new_levels = editor.reload_edit_level(process_level_data)
                     if new_levels:
@@ -1081,12 +1278,13 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                         reload_fonts()
                     continue
                 
-                # S = ручное сохранение
                 if event.key == pygame.K_s:
-                    state_manager.save_manual(player_pos, path_positions, player_history, dev_recording)
+                    # Сохраняем состояние movable вместе с остальным
+                    movable_state = movable_manager.copy_state()
+                    state_manager.save_manual(player_pos, path_positions, player_history, 
+                                              dev_recording, movable_state)
                     continue
 
-                # L = загрузка ручного сохранения
                 if event.key == pygame.K_l:
                     data = state_manager.load_manual()
                     if data:
@@ -1094,12 +1292,12 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                         path_positions = data['path']
                         player_history = data['hist']
                         dev_recording = data['dev']
-                        # ИСПРАВЛЕНИЕ: обновляем режим просмотра
+                        if 'movable' in data:
+                            movable_manager.restore_state(data['movable'])
                         if len(path_positions) > 1:
                             show_requirements = False
                     continue
 
-                # Z = откат на один шаг
                 if event.key == pygame.K_z:
                     data = state_manager.pop()
                     if data:
@@ -1107,7 +1305,8 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                         path_positions = data['path']
                         player_history = data['hist']
                         dev_recording = data['dev']
-                        # ИСПРАВЛЕНИЕ: обновляем режим просмотра
+                        if 'movable' in data:
+                            movable_manager.restore_state(data['movable'])
                         if len(path_positions) > 1:
                             show_requirements = False
                     else:
@@ -1125,39 +1324,43 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                     if show_requirements and len(path_positions) == 1:
                         show_requirements = False
                     
-                    target = [player_pos[0] + dx, player_pos[1] + dy]
-                    in_bounds = 0 <= target[0] < GRID_COLS and 0 <= target[1] < GRID_ROWS
-                    hit_poison = not is_path_clear(player_pos, target, poison_data)
-                    blocked = not is_path_clear(player_pos, target, walls_data)
-
-                    # ИСПРАВЛЕНИЕ: сохраняем состояние ПЕРЕД смертью
-                    if hit_poison:
-                        state_manager.push(player_pos, path_positions, player_history, dev_recording)
-                        print("☠ ПОГИБ! (Z = откат на ход до смерти, L = загрузка)")
+                    # Сохраняем состояние movable ДО попытки хода
+                    movable_state_before = movable_manager.copy_state()
+                    
+                    # Используем movable_manager для обработки движения
+                    result = movable_manager.try_push(
+                        player_pos, move, GRID_COLS, GRID_ROWS,
+                        walls_data, poison_data, is_path_clear
+                    )
+                    
+                    # Проверка яда
+                    if result['hit_poison']:
+                        state_manager.push(player_pos, path_positions, player_history, 
+                                          dev_recording, movable_state_before)
+                        print("☠ ПОГИБ! (Z = откат, L = загрузка)")
                         load_level(current_idx, clear_history=False)
                         continue
-
-
-                    if in_bounds and not blocked:
-                        state_manager.push(player_pos, path_positions, player_history, dev_recording)
-                        player_pos = target
+                    
+                    # Если можно двигаться
+                    if result['can_move']:
+                        # Сохраняем состояние для undo
+                        state_manager.push(player_pos, path_positions, player_history, 
+                                          dev_recording, movable_state_before)
+                        
+                        # Перемещаем игрока
+                        player_pos = list(result['target_pos'])
+                        
+                        # Логируем перемещения коробок
+                        if result['moves_made']:
+                            print(f"[BOX] Сдвинуто: {len(result['moves_made'])} объектов")
 
                     player_history.append(move)
                     dev_recording.append(move)
                     path_positions.append(tuple(player_pos))
 
                     # Проверка победы
-                    complete = False
-                    if level_type == "sequence":
-                        if player_history == required_sequence:
-                            complete = True
-                        elif len(player_history) >= len(required_sequence) and hints_enabled:
-                            print("Неверно! R")
-                    else:
-                        if check_all_conditions(level_conditions, path_positions, player_pos, GRID_COLS, GRID_ROWS):
-                            complete = True
-                    
-                    if complete:
+                    if check_all_conditions(level_conditions, path_positions, 
+                                           player_pos, GRID_COLS, GRID_ROWS, player_history):
                         if dev_disable_victory:
                             print("[DEV] Победа OFF")
                         else:
@@ -1174,25 +1377,32 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                                     print("\n🎉 ИГРА ПРОЙДЕНА! 🎉")
                                     game_running = False
 
-        # === ОТРИСОВКА ===
+        # === ОТРИСОВКА (RENDER LOOP) ===
         screen.fill(COLOR_BG)
         game_surface.fill(COLOR_BG)
         
-        if level_type == "condition":
-            for cell in condition_cells:
-                pygame.draw.rect(game_surface, COLOR_CONDITION_HINT,
-                    (cell[0] * CELL_SIZE, cell[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
+        # Определяем режим просмотра условий (для затемнения)
+        is_preview = show_requirements and (level_requirements or global_requirements)
 
-        if level_type == "sequence" and target_grid_pos:
+        # 1. ПОДЛОЖКА: Зеленые клетки условий (Самый нижний слой)
+        for cell in condition_cells:
+            pygame.draw.rect(game_surface, COLOR_CONDITION_HINT,
+                (cell[0] * CELL_SIZE, cell[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
+
+        # Цель (для старых уровней)
+        if target_grid_pos:
             pygame.draw.rect(game_surface, COLOR_TARGET,
                 (target_grid_pos[0] * CELL_SIZE, target_grid_pos[1] * CELL_SIZE, CELL_SIZE, CELL_SIZE))
 
+        # 2. ОКРУЖЕНИЕ: Сетка и барьеры (Поверх подложки)
         draw_grid(game_surface, GRID_COLS * CELL_SIZE, GRID_ROWS * CELL_SIZE, CELL_SIZE)
         draw_barriers(game_surface, walls_data, COLOR_WALL, CELL_SIZE)
         draw_barriers(game_surface, poison_data, COLOR_POISON, CELL_SIZE)
 
-        # Отрисовка номеров шагов (если требования скрыты)
-        if not (show_requirements and (level_requirements or global_requirements)):
+        # 3. ДИНАМИЧЕСКИЕ ОБЪЕКТЫ (Игрок и коробки)
+        
+        # Номера шагов (рисуем только если не в режиме просмотра)
+        if not is_preview:
             cell_data = {}
             for step, pos in enumerate(path_positions):
                 if pos not in cell_data: cell_data[pos] = []
@@ -1204,12 +1414,13 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                     game_surface.blit(ts, (pos[0] * CELL_SIZE + 2 + (i % 3) * (CELL_SIZE // 3),
                                            pos[1] * CELL_SIZE + 2 + (i // 3) * (CELL_SIZE // 3)))
 
-        # Игрок
-        px = player_pos[0] * CELL_SIZE + CELL_SIZE // 2
-        py = player_pos[1] * CELL_SIZE + CELL_SIZE // 2
-        pygame.draw.circle(game_surface, COLOR_PLAYER, (px, py), int(CELL_SIZE * 0.4))
+        # Коробки: передаем dim=True если просмотр условий
+        movable.draw_movable_objects(game_surface, movable_manager, CELL_SIZE, dim=is_preview)
 
-        # Требования на клетках
+        # Игрок: передаем dim=True если просмотр условий
+        draw_player(game_surface, player_pos, CELL_SIZE, dim=is_preview)
+
+        # 4. ИНТЕРФЕЙС (Самый верхний слой)
         if show_requirements and level_requirements:
             draw_requirements(game_surface, level_requirements, CELL_SIZE)
 
@@ -1224,7 +1435,7 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
 
         screen.blit(game_surface, (GRID_OFFSET_X, GRID_OFFSET_Y))
 
-        # Глобальные требования на панели
+        # Глобальные требования (боковая панель)
         if show_requirements and global_requirements:
             panel_x = WINDOW_WIDTH - SIDE_PANEL_WIDTH
             draw_global_requirements(screen, global_requirements, 
@@ -1296,8 +1507,7 @@ if __name__ == "__main__":
         
         print(f"\nУровней: {len(LEVELS)}")
         for i, lvl in enumerate(LEVELS):
-            t = "SEQ" if lvl.get("type") == "sequence" else "COND"
-            print(f"  {i+1}. [{t}] {lvl.get('name', f'Уровень {i+1}')}")
+            print(f"  {i+1}. {lvl.get('name', f'Уровень {i+1}')}")
         
         try:
             choice = input(f"\nВыбор (1-{len(LEVELS)}): ").strip()
