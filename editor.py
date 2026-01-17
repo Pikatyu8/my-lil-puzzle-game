@@ -1,3 +1,4 @@
+# editor.py
 import json
 import os
 import pygame
@@ -35,21 +36,54 @@ def create_template(filename=EDIT_FILE):
     """Создаёт шаблон файла уровня с примерами."""
     # Записываем как строку для красивого форматирования
     template = """{
-      "name": "Полный пример",
-      "type": "condition",
-      "grid": [10, 8],
-      "start": [0, 0],
-      "conditions": [
-        {"check": "visit", "cells": [[5, 4]], "count": 8, "operator": "=="},
-        {"check": "end_at", "cells": [[9, 7]]}
-      ],
-      "walls": [
-        [[[4, 0], [4, 1], [4, 2]], {"r": "both"}]
-      ],
-      "poison": [
-        [[[0, 2],[1, 2],[2, 2],[3, 2],[4, 2]], {"d": "outer"}]
-      ],
-      "hint": "Посети центр дважды, избегай яда"
+  "name": "Полный пример",
+  "type": "condition",
+  "grid": [10, 11],
+  "start": [0, 0],
+  "conditions": [
+    {"check": "total_steps", "count": 136, "operator": ">="},
+    
+    {"check": "no_revisit", "except": [
+      [0,1], [0,2], [5,4], [6,4], [2,6], [2,7], [5,5], [4,7], [4,8], [5,7], [5,8]
+    ]},
+    {"check": "order", "cells": [[0,2], [4,0], [7,2], [7,1], [6,1], [6,2]]},
+    
+    {"check": "visit", "cells": [[8,1], [3,5], [4,5]], "count": 0, "operator": "=="},
+    {"check": "visit", "cells": [[5,4]], "count": 8, "operator": "=="},
+    {"check": "visit", "cells": [[6,4]], "count": 7, "operator": "=="},
+    {"check": "visit", "cells": [[5,5]], "count": 2, "operator": "=="},
+    {"check": "visit", "cells": [[2,6], [2,7]], "count": 2, "operator": "=="},
+    {"check": "visit", "cells": [[4,7], [4,8], [5,7], [5,8]], "count": 5, "operator": "=="},
+    
+    {"check": "visit", "cells": [[9,10]]},
+    {"check": "visit", "cells": [[2,8]], "count": 1, "operator": "=="},
+    
+    {"check": "consecutive", "cells": [[0,1], [0,2]], "count": 3}
+  ],
+  
+  "movable": [
+    {"range": [[2, 8], [3, 8]], "blocked": "u", "connected":"true"}
+    ],
+
+  "walls": [
+    {"cells": [[4,0], [4,1], [4,2]], "sides": "r", "type": "both"}
+  ],
+  
+  "poison": [
+    {"range": [[0,5], [9,10]], "mode": "perimeter", "sides": "ldr", "type": "both"},
+    
+    {"range": [[5,5], [9,7]],  "sides": "dr", "type": "outer"},
+    {"range": [[5,8], [9,10]], "sides": "dl", "type": "outer"},
+    {"range": [[0,8], [4,10]], "sides": "ul", "type": "outer"},
+    {"range": [[0,5], [4,7]],  "sides": "ur", "type": "outer"},
+    
+    {"cells": [[0,2], [1,2], [3,2], [4,2]], "sides": "d", "type": "both"},
+    {"cell": [2,2], "sides": "d", "type": "outer"},
+    
+    {"range": [[5,5], [9,5]], "sides": "u", "type": "inner"}
+  ],
+  
+  "hint": ""
 }
 """
     
@@ -91,6 +125,17 @@ def validate_level(level_data):
         if not (0 <= sx < gx and 0 <= sy < gy):
             errors.append(f"start {level_data['start']} вне grid {level_data['grid']}")
     
+    # Проверка movable
+    if "movable" in level_data:
+        for i, item in enumerate(level_data["movable"]):
+            if not isinstance(item, dict):
+                errors.append(f"movable[{i}] должен быть объектом")
+                continue
+            
+            has_pos = any(key in item for key in ["cell", "cells", "range", "ranges"])
+            if not has_pos:
+                errors.append(f"movable[{i}] не имеет координат (cell/cells/range/ranges)")
+
     # Вывод результатов
     if errors:
         print("[EDITOR] ❌ ОШИБКИ:")
@@ -151,7 +196,7 @@ def print_editor_help():
 ║                    РЕЖИМ РЕДАКТИРОВАНИЯ                      ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Enter    - Перезагрузить уровень из edit_user_level.json    ║
-║  R        - Сбросить позицию игрока                          ║
+║  R        - Сбросить позицию игрока (и коробок)              ║
 ║  Z        - Отменить ход (Undo)                              ║
 ║  S        - Сохранить состояние                              ║
 ║  L        - Загрузить состояние                              ║
