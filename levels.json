@@ -1,362 +1,121 @@
-[
-  {
-    "name": "1. Первые шаги",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Просто дойди до противоположного угла",
-    "conditions": [
-      {"check": "end_at", "cells": [[2, 2]]}
-    ]
-  },
-  {
-    "name": "2. Точный путь",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Дойди до угла ровно за 4 шага",
-    "conditions": [
-      {"check": "end_at", "cells": [[2, 2]]},
-      {"check": "total_steps", "count": 4, "operator": "=="}
-    ]
-  },
-  {
-    "name": "3. Длинный путь",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Дойди до угла, но сделай НЕ МЕНЬШЕ 6 шагов",
-    "conditions": [
-      {"check": "end_at", "cells": [[2, 2]]},
-      {"check": "total_steps", "count": 6, "operator": ">="}
-    ]
-  },
-  {
-    "name": "4. Запретный центр",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Дойди до угла, НЕ заходя в центр",
-    "conditions": [
-      {"check": "end_at", "cells": [[2, 2]]},
-      {"check": "avoid_cells", "cells": [[1, 1]]}
-    ]
-  },
-  {
-    "name": "5. Обязательная остановка",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Пройди ЧЕРЕЗ центр к углу за 5 шагов",
-    "conditions": [
-      {"check": "visit_cells", "cells": [[1, 1]], "match": "all"},
-      {"check": "end_at", "cells": [[2, 2]]},
-      {"check": "total_steps", "count": 5, "operator": "=="}
-    ]
-  },
-  {
-    "name": "6. Четыре угла",
-    "grid": [3, 3],
-    "start": [1, 1],
-    "type": "condition",
-    "hint": "Посети все 4 угла, стартуя из центра",
-    "conditions": [
-      {"check": "visit_cells", "cells": "corners", "match": "all"}
-    ]
-  },
-  {
-    "name": "7. Строгий порядок",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Посети углы ПО ЧАСОВОЙ стрелке",
-    "conditions": [
-      {"check": "visit_order", "cells": [[0, 0], [2, 0], [2, 2], [0, 2]]}
-    ]
-  },
-  {
-    "name": "8. Возвращение",
-    "grid": [3, 3],
-    "start": [1, 1],
-    "type": "condition",
-    "hint": "Посети центр минимум 3 раза за ≤8 шагов",
-    "conditions": [
-      {"check": "visit_count", "cells": [[1, 1]], "count": 3, "operator": ">="},
-      {"check": "total_steps", "count": 8, "operator": "<="}
-    ]
-  },
-  {
-    "name": "9. Змейка",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Пройди ВСЕ 9 клеток без повторов",
-    "conditions": [
-      {"check": "no_revisit"},
-      {"check": "total_steps", "count": 8, "operator": "=="}
-    ]
-  },
-  {
-    "name": "10. Первая стена",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Стена блокирует прямой путь! Обойди.",
-    "walls": [
-      [[1, 0], "down", "both"],
-      [[1, 1], "down", "both"]
-    ],
-    "conditions": [
-      {"check": "end_at", "cells": [[2, 2]]}
-    ]
-  },
-  {
-    "name": "11. Лабиринт",
-    "grid": [4, 4],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Пройди лабиринт ровно за 12 шагов, не наступая на клетки дважды",
-    "walls": [
-      [[0, 0], "right", "both"],
-      [[0, 2], "down", "both"],
-      [[1, 1], "down", "both"],
-      [[2, 0], "down", "both"],
-      [[2, 2], "right", "both"],
-      [[2, 2], "down", "both"],
-      [[1, 3], "right", "both"]
-    ],
-    "conditions": [
-      {"check": "end_at", "cells": [[3, 3]]},
-      {"check": "total_steps", "count": 12, "operator": "=="},
-      {"check": "no_revisit"}
-    ]
-  },
-  {
-    "name": "12. Минное поле",
-    "grid": [4, 4],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Красные линии = мгновенная смерть!",
-    "poison": [
-      [[1, 1], "right", "both"],
-      [[1, 1], "down", "both"],
-      [[2, 2], "left", "both"],
-      [[2, 2], "up", "both"]
-    ],
-    "conditions": [
-      {"check": "end_at", "cells": [[3, 3]]}
-    ]
-  },
-  {
-    "name": "13. Точное время",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Попади в центр ИМЕННО на 2-м шаге",
-    "conditions": [
-      {"check": "first_visit_at_step", "cells": [[1, 1]], "step": 2},
-      {"check": "end_at", "cells": [[2, 2]]},
-      {"check": "total_steps", "count": 4, "operator": "=="}
-    ]
-  },
-  {
-    "name": "14. Выбор пути",
-    "grid": [3, 3],
-    "start": [1, 1],
-    "type": "condition",
-    "hint": "Закончи в (0,0) ИЛИ (2,2), но НЕ в обоих",
-    "conditions": [
-      {
-        "check": "group",
-        "logic": "XOR",
-        "items": [
-          {"check": "end_at", "cells": [[0, 0]]},
-          {"check": "end_at", "cells": [[2, 2]]}
-        ]
-      },
-      {"check": "avoid_cells", "cells": [[2, 0], [0, 2]]},
-      {"check": "total_steps", "count": 4, "operator": "=="}
-    ]
-  },
-  {
-    "name": "15. Топтание",
-    "grid": [3, 3],
-    "start": [1, 1],
-    "type": "condition",
-    "hint": "Дойди до угла (2,2), потопчись ТАМ (бейся в границу!), затем посети (0,0)",
-    "conditions": [
-      {"check": "consecutive_visits", "cells": [[2, 2]], "count": 3},
-      {"check": "visit_cells", "cells": [[0, 0]], "match": "all"}
-    ]
-  },
-  {
-    "name": "16. Коллекционер",
-    "grid": [4, 4],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Собери ВСЕ углы по краям, избегая центр 2x2",
-    "conditions": [
-      {"check": "visit_cells", "cells": "corners", "match": "all"},
-      {"check": "avoid_cells", "cells": [[1, 1], [2, 2], [1, 2], [2, 1]]},
-      {"check": "end_at", "cells": [[3, 3]]}
-    ]
-  },
-  {
-    "name": "17. Двойной агент",
-    "grid": [3, 3],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Посети центр РОВНО 2 раза за 6 шагов",
-    "conditions": [
-      {"check": "visit_count", "cells": [[1, 1]], "count": 2, "operator": "=="},
-      {"check": "end_at", "cells": [[2, 2]]},
-      {"check": "total_steps", "count": 6, "operator": "=="}
-    ]
-  },
-  {
-    "name": "18. Узкий коридор",
-    "grid": [4, 4],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Стены + яд = один безопасный путь",
-    "walls": [
-      [[0, 1], "right", "both"],
-      [[2, 0], "down", "both"],
-      [[3, 1], "down", "both"]
-    ],
-    "poison": [
-      [[1, 2], "down", "both"],
-      [[2, 3], "left", "both"]
-    ],
-    "conditions": [
-      {"check": "end_at", "cells": [[3, 3]]}
-    ]
-  },
-  {
-    "name": "19. Хронометраж",
-    "grid": [4, 4],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Центр (1,1) на 2-м шаге, угол (3,3) на 6-м",
-    "conditions": [
-        {"check": "first_visit_at_step", "cells": [[1, 1]], "step": 2},
-        {"check": "first_visit_at_step", "cells": [[3, 3]], "step": 6},
-        {"check": "end_at", "cells": [[0, 0]]}
-    ]
-  },
-  {
-    "name": "20. ФИНАЛЬНЫЙ БОСС",
-    "grid": [4, 4],
-    "start": [0, 0],
-    "type": "condition",
-    "hint": "Углы: (3,0)→(3,3)→(0,3). Центр запрещён. Посети (1,2)!",
-    "walls": [
-        [[1, 0], "down", "both"],
-        [[0, 2], "right", "both"]
-    ],
-    "poison": [
-        [[2, 2], "down", "both"]
-    ],
-    "conditions": [
-        {"check": "visit_order", "cells": [[3, 0], [3, 3], [0, 3]]},
-        {"check": "avoid_cells", "cells": [[1, 1], [2, 1]]},
-        {"check": "visit_cells", "cells": [[1, 2]], "match": "all"},
-        {"check": "total_steps", "count": 12, "operator": "<="}
-    ]
-  },
-  {
-        "name": "Хроно-Синхротрон",
-        "type": "condition",
-        "grid": [15, 13],
-        "start": [7, 6],
-        "hint": "Соблюдайте тайминги! Придете рано — ищите путь длиннее. Придете поздно — проиграете.",
-        "walls": [
-            [[7, 5], "up", "outer"], [[7, 7], "down", "outer"],
-            [[6, 6], "left", "outer"], [[8, 6], "right", "outer"],
-            
-            [[7, 2], "left", "both"], [[7, 2], "right", "both"], [[7, 2], "up", "inner"],
-            [[7, 10], "left", "both"], [[7, 10], "right", "both"], [[7, 10], "down", "inner"],
-            
-            [[3, 6], "up", "both"], [[3, 6], "down", "both"], [[3, 6], "left", "inner"],
-            [[11, 6], "up", "both"], [[11, 6], "down", "both"], [[11, 6], "right", "inner"],
 
-            [[2, 2], "down", "outer"], [[2, 2], "right", "outer"],
-            [[12, 2], "down", "outer"], [[12, 2], "left", "outer"],
-            [[12, 10], "up", "outer"], [[12, 10], "left", "outer"],
-            [[2, 10], "up", "outer"], [[2, 10], "right", "outer"]
-        ],
-        "poison": [
-            [[7, 3], "down", "inner"], [[7, 9], "up", "inner"],
-            [[4, 6], "right", "inner"], [[10, 6], "left", "inner"],
-            
-            [[1, 3], "right", "both"], [[13, 3], "left", "both"],
-            [[1, 9], "right", "both"], [[13, 9], "left", "both"],
-            
-            [[4, 1], "down", "both"], [[10, 1], "down", "both"],
-            [[4, 11], "up", "both"], [[10, 11], "up", "both"]
-        ],
-        "conditions": [
-            {
-                "check": "reach_after_step",
-                "cells": [[1, 1]],
-                "step": 10
-            },
-            {
-                "check": "reach_before_step",
-                "cells": [[1, 1]],
-                "step": 16
-            },
-            {
-                "check": "reach_after_step",
-                "cells": [[13, 1]],
-                "step": 24
-            },
-            {
-                "check": "reach_before_step",
-                "cells": [[13, 1]],
-                "step": 30
-            },
-            {
-                "check": "reach_after_step",
-                "cells": [[13, 11]],
-                "step": 38
-            },
-            {
-                "check": "reach_before_step",
-                "cells": [[13, 11]],
-                "step": 44
-            },
-            {
-                "check": "reach_after_step",
-                "cells": [[1, 11]],
-                "step": 52
-            },
-            {
-                "check": "reach_before_step",
-                "cells": [[1, 11]],
-                "step": 58
-            },
-            {
-                "check": "no_revisit",
-                "except": [[7, 6]]
-            },
-            {
-                "check": "end_at",
-                "cells": [[7, 6]]
-            }
-        ]
-    },
-    {
-        "name": "мой лвл",
-        "grid":[3,3],
-        "start":[0,0],
-        "type":"condition",
-        "hint":"пока что нет",
-        "poison":[
-            [[0,1],{"down":"inner","up":"inner","right":"inner","left":"inner"}]
-        ],
-        "conditions": [
-            {"check": "total_steps","count":500,"operator":"=="}
-        ]
-    }
-]
+[{
+  "name": "1",
+  "type": "condition",
+  "grid": [9, 8],
+  "start": [1, 6],
+  "conditions": [
+	{"check": "end_at", "cells": [[7, 6]]},
+	{"check": "sequence", "moves": "u u u u u u r r r r d d"},
+	{"check": "visit", "range": [[0,0], [0,7]], "count": 0},
+	{"check": "visit", "range": [[1,7], [8,7]], "count": 0},
+	{"check": "visit", "range": [[4,0], [8,0]], "count": 0},
+	{"check": "visit", "range": [[8,1], [8,6]], "count": 0},
+	{"check": "visit", "range": [[1,4], [3,4]], "count": 0},
+	{"check": "visit", "range": [[5,3], [5,3]], "count": 0},
+	{"check": "visit", "range": [[7,3], [7,3]], "count": 0},
+	{"check": "visit", "range": [[5,4], [7,4]], "count": 0}
+  ],
+  
+  "walls": [
+    {"cells": [[1,1], [2,1], [3,1]], "sides": "u", "type": "both"}
+  ],
+  
+  
+  "hint": ""
+},
+{
+  "name": "2",
+  "type": "condition",
+  "grid": [8, 8],
+  "start": [6, 1],
+  "conditions": [
+	{"check": "end_at", "cells": [[6, 6]]},
+	{"check": "sequence", "moves": "d d d d d d d l l l l l l l"},
+	{"check": "visit", "range": [[0,7], [7,7]], "count": 0},
+	{"check": "visit", "range": [[0,0], [6,0]], "count": 0},
+	{"check": "visit", "range": [[7,0], [7,6]], "count": 0},
+	{"check": "visit", "range": [[2,4], [3,6]], "count": 0},
+	{"check": "visit", "range": [[0,5], [0,5]], "count": 0},
+	{"check": "visit", "range": [[2,1], [2,2]], "count": 0}
+  ],
+  
+  "walls": [
+  ],
+  
+	"movable":[
+{"cells": [[5,2], [5,5]]}
+],
+  
+  "hint": ""
+},
+{
+  "name": "3",
+  "type": "condition",
+  "grid": [9, 9],
+  "start": [5, 3],
+  "conditions": [
+	{"check": "end_at", "cells": [[5, 5]]},
+	{"check": "sequence", "moves": "r r r r r r r d d d r"},
+	{"check": "visit", "range": [[0,0], [0,8]], "count": 0},
+	{"check": "visit", "range": [[1,8], [8,8]], "count": 0},
+	{"check": "visit", "range": [[1,0], [8,0]], "count": 0},
+	{"check": "visit", "range": [[8,1], [8,7]], "count": 0},
+	{"check": "visit", "range": [[2,4], [5,4]], "count": 0},
+	{"check": "visit", "range": [[6,2], [6,7]], "count": 0}
+  ],
+  
+  "walls": [
+  ],
+	"movable":[
+{"cells": [[2,6], [4,6], [2,2], [4,2]]}
+],
+  
+  "hint": ""
+},
+{
+  "name": "Полный пример",
+  "type": "condition",
+  "grid": [10, 11],
+  "start": [0, 0],
+  "conditions": [
+    {"check": "total_steps", "count": 136, "operator": ">="},
+    
+    {"check": "no_revisit", "except": [
+      [0,1], [0,2], [5,4], [6,4], [2,6], [2,7], [5,5], [4,7], [4,8], [5,7], [5,8]
+    ]},
+    {"check": "order", "cells": [[0,2], [4,0], [7,2], [7,1], [6,1], [6,2]]},
+    
+    {"check": "visit", "cells": [[8,1], [3,5], [4,5]], "count": 0, "operator": "=="},
+    {"check": "visit", "cells": [[5,4]], "count": 8, "operator": "=="},
+    {"check": "visit", "cells": [[6,4]], "count": 7, "operator": "=="},
+    {"check": "visit", "cells": [[5,5]], "count": 2, "operator": "=="},
+    {"check": "visit", "cells": [[2,6], [2,7]], "count": 2, "operator": "=="},
+    {"check": "visit", "cells": [[4,7], [4,8], [5,7], [5,8]], "count": 5, "operator": "=="},
+    
+    {"check": "visit", "cells": [[9,10]]},
+    {"check": "visit", "cells": [[2,8]], "count": 1, "operator": "=="},
+    
+    {"check": "consecutive", "cells": [[0,1], [0,2]], "count": 3}
+  ],
+  
+  "walls": [
+    {"cells": [[4,0], [4,1], [4,2]], "sides": "r", "type": "both"}
+  ],
+  
+  "poison": [
+    {"range": [[0,5], [9,10]], "mode": "perimeter", "sides": "ldr", "type": "both"},
+    
+    {"range": [[5,5], [9,7]],  "sides": "dr", "type": "outer"},
+    {"range": [[5,8], [9,10]], "sides": "dl", "type": "outer"},
+    {"range": [[0,8], [4,10]], "sides": "ul", "type": "outer"},
+    {"range": [[0,5], [4,7]],  "sides": "ur", "type": "outer"},
+    
+    {"cells": [[0,2], [1,2], [3,2], [4,2]], "sides": "d", "type": "both"},
+    {"cell": [2,2], "sides": "d", "type": "outer"},
+    
+    {"cells": [[5,5], [10,5]], "sides": "u", "type": "inner"}
+  ],
+  
+  "hint": ""
+}]
