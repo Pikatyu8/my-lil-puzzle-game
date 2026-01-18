@@ -529,79 +529,99 @@ def check_sequence_match(history, seq, mode, min_count=1):
         return count_sequence_occurrences(history, seq) >= min_count
 
 
+# =============================================================================
+# 1. УЛУЧШЕННАЯ ПРОВЕРКА ПОСЛЕДОВАТЕЛЬНОСТИ ХОДОВ (с полными операторами)
+# =============================================================================
+
 def check_sequence_condition(cond, player_history):
     """
-    Проверяет условие типа sequence.
+    Проверяет условие типа sequence с полным набором операторов.
     
     Форматы:
     {
         "check": "sequence",
         "moves": "u d l r",              // одна последовательность
         "mode": "contains",              // contains/exact/starts_with/ends_with/not_contains
-        "count": 1,                      // минимум вхождений (для contains)
+        "count": 1,                      // количество вхождений
+        "operator": ">=",                // ==, >=, <=, >, <, != для count
+        "min": 1, "max": 3,              // диапазон вхождений (альтернатива operator+count)
         "overlapping": false             // перекрывающиеся вхождения
     }
     
     {
         "check": "sequence",
         "any": ["u u", "d d"],           // любая из последовательностей
-        "mode": "contains"
-    }
-    
-    {
-        "check": "sequence", 
         "all": ["u d", "l r"],           // все последовательности
-        "mode": "contains"
+        "mode": "not_contains"           // требовать ОТСУТСТВИЕ последовательности
     }
     """
     mode = cond.get("mode", "contains")
-    min_count = cond.get("count", 1)
     overlapping = cond.get("overlapping", False)
     
-    # Множественные последовательности - any
-    if "any" in cond:
-        sequences = cond["any"]
-        for seq_spec in sequences:
-            seq = normalize_moves(seq_spec)
-            if mode == "contains":
-                if count_sequence_occurrences(player_history, seq, overlapping) >= min_count:
-                    return True
-            elif check_sequence_match(player_history, seq, mode, min_count):
-                return True
-        return False
+    # Получаем параметры подсчета
+    count_target = cond.get("count", 1)
+    operator = cond.get("operator", ">=")
+    min_count = cond.get("min", None)
+    max_count = cond.get("max", None)
     
-    # Множественные последовательности - all
+    def check_single_sequence(seq_spec):
+        seq = normalize_moves(seq_spec)
+        if not seq:
+            return True
+        
+        actual_count = count_sequence_occurrences(player_history, seq, overlapping)
+        
+        # Режимы без подсчета
+        if mode == "exact":
+            return player_history == seq
+        elif mode == "starts_with":
+            return len(player_history) >= len(seq) and player_history[:len(seq)] == seq
+        elif mode == "ends_with":
+            return len(player_history) >= len(seq) and player_history[-len(seq):] == seq
+        elif mode == "not_contains":
+            # Для not_contains можно указать max=0 или просто требовать 0 вхождений
+            if max_count is not None:
+                return actual_count <= max_count
+            return actual_count == 0
+        else:  # contains
+            # Применяем оператор или диапазон
+            if min_count is not None and max_count is not None:
+                return min_count <= actual_count <= max_count
+            elif min_count is not None:
+                return actual_count >= min_count
+            elif max_count is not None:
+                return actual_count <= max_count
+            else:
+                # Используем operator и count
+                op_func = OPERATORS.get(operator, OPERATORS[">="])
+                return op_func(actual_count, count_target)
+    
+    # Обработка any/all с учетом match (для совместимости)
+    match = cond.get("match", "all")
+    
+    if "any" in cond:
+        return any(check_single_sequence(s) for s in cond["any"])
+    
     if "all" in cond:
-        sequences = cond["all"]
-        for seq_spec in sequences:
-            seq = normalize_moves(seq_spec)
-            if mode == "contains":
-                if count_sequence_occurrences(player_history, seq, overlapping) < min_count:
-                    return False
-            elif not check_sequence_match(player_history, seq, mode, min_count):
-                return False
-        return True
+        return all(check_single_sequence(s) for s in cond["all"])
     
     # Одиночная последовательность
-    seq = normalize_moves(cond.get("moves", ""))
-    if not seq:
-        return True
-    
-    if mode == "contains":
-        return count_sequence_occurrences(player_history, seq, overlapping) >= min_count
-    return check_sequence_match(player_history, seq, mode, min_count)
+    return check_single_sequence(cond.get("moves", ""))
 
 
 def format_sequence_requirement(cond):
-    """Форматирует требование sequence для отображения."""
+    """Форматирует требование sequence для отображения с полными операторами."""
     mode = cond.get("mode", "contains")
     count = cond.get("count", 1)
+    operator = cond.get("operator", ">=")
+    min_c = cond.get("min", None)
+    max_c = cond.get("max", None)
     
     mode_symbols = {
         "contains": "∋",
         "exact": "≡", 
-        "starts_with": "→",
-        "ends_with": "←",
+        "starts_with": "⇒",
+        "ends_with": "⇐",
         "not_contains": "∌"
     }
     symbol = mode_symbols.get(mode, "")
@@ -611,17 +631,123 @@ def format_sequence_requirement(cond):
         arrows = {"u": "↑", "d": "↓", "l": "←", "r": "→"}
         return "".join(arrows.get(m, m) for m in moves)
     
+    def format_count_suffix():
+        """Формирует суффикс с количеством."""
+        if mode in ["exact", "starts_with", "ends_with", "not_contains"]:
+            return ""
+        
+        if min_c is not None and max_c is not None:
+            return f" ×{min_c}-{max_c}"
+        elif min_c is not None:
+            return f" ×≥{min_c}"
+        elif max_c is not None:
+            return f" ×≤{max_c}"
+        elif count != 1 or operator != ">=":
+            op_sym = OP_SYMBOLS.get(operator, operator)
+            return f" ×{op_sym}{count}"
+        return ""
+    
+    suffix = format_count_suffix()
+    
     if "any" in cond:
         seqs = [format_moves(s) for s in cond["any"]]
-        return f"{symbol}({'/'.join(seqs)})"
+        return f"{symbol}({'/'.join(seqs)}){suffix}"
     elif "all" in cond:
         seqs = [format_moves(s) for s in cond["all"]]
-        return f"{symbol}[{'&'.join(seqs)}]"
+        return f"{symbol}[{'&'.join(seqs)}]{suffix}"
     else:
         seq = format_moves(cond.get("moves", ""))
-        if count > 1:
-            return f"{symbol}{seq}×{count}"
-        return f"{symbol}{seq}"
+        return f"{symbol}{seq}{suffix}"
+    
+# =============================================================================
+# 2. ПРОВЕРКА ЯДА НА ГРАНИЦАХ УРОВНЯ
+# =============================================================================
+
+def check_poison_on_exit(current_pos, move_dir, poison_data):
+    """
+    Проверяет, есть ли яд при попытке выйти из клетки (inner barrier).
+    Вызывается ПЕРЕД проверкой валидности целевой позиции.
+    """
+    if not poison_data:
+        return False
+    
+    for b_pos, b_side, b_type in poison_data:
+        if tuple(current_pos) == b_pos and b_side == move_dir and b_type in ["inner", "both"]:
+            return True
+    return False
+
+
+def check_poison_on_entry(next_pos, move_dir, poison_data, grid_cols, grid_rows):
+    """
+    Проверяет, есть ли яд при попытке войти в клетку (outer barrier).
+    Также проверяет границы уровня.
+    """
+    if not poison_data:
+        return False
+    
+    opposite = {"right": "left", "left": "right", "down": "up", "up": "down"}
+    entry_side = opposite.get(move_dir, move_dir)
+    
+    nx, ny = next_pos
+    
+    # Проверка выхода за границы - если есть outer яд на текущей клетке
+    if not (0 <= nx < grid_cols and 0 <= ny < grid_rows):
+        return False  # За границей нет яда по entry, только по exit
+    
+    for b_pos, b_side, b_type in poison_data:
+        if tuple(next_pos) == b_pos and b_side == entry_side and b_type in ["outer", "both"]:
+            return True
+    
+    return False
+
+# =============================================================================
+# 3. ПЕРЕНОС ТЕКСТА ГЛОБАЛЬНЫХ ТРЕБОВАНИЙ
+# =============================================================================
+
+def wrap_text(text, font, max_width):
+    """Переносит текст по словам, чтобы он влез в max_width."""
+    if font.size(text)[0] <= max_width:
+        return [text]
+    
+    words = text.split(' ')
+    lines = []
+    current_line = ""
+    
+    for word in words:
+        # Проверяем, влезет ли слово в текущую строку
+        test_line = f"{current_line} {word}".strip() if current_line else word
+        
+        if font.size(test_line)[0] <= max_width:
+            current_line = test_line
+        else:
+            # Слово не влезает
+            if current_line:
+                lines.append(current_line)
+            
+            # Проверяем, влезает ли слово само по себе
+            if font.size(word)[0] <= max_width:
+                current_line = word
+            else:
+                # Разбиваем длинное слово по символам
+                chars = list(word)
+                current_line = ""
+                for char in chars:
+                    test = current_line + char
+                    if font.size(test)[0] <= max_width:
+                        current_line = test
+                    else:
+                        if current_line:
+                            lines.append(current_line)
+                        current_line = char
+    
+    if current_line:
+        lines.append(current_line)
+    
+    return lines if lines else [text]
+
+
+
+
 
 # =============================================================================
 # ПРОВЕРКА УСЛОВИЙ
@@ -662,7 +788,15 @@ def check_condition(cond, path, player_pos, cols, rows, player_history=None):
             return all(min_c <= visit_counts.get(c, 0) <= max_c for c in cells)
         
         count = cond.get("count", 1)
-        op_func = OPERATORS.get(cond.get("operator", ">="), OPERATORS[">="])
+        
+        # === ИСПРАВЛЕНИЕ: для count=0 используем == по умолчанию ===
+        if count == 0:
+            default_op = "=="
+        else:
+            default_op = ">="
+        op_func = OPERATORS.get(cond.get("operator", default_op), OPERATORS[default_op])
+        # === КОНЕЦ ИСПРАВЛЕНИЯ ===
+        
         if match == "any":
             return any(op_func(visit_counts.get(c, 0), count) for c in cells)
         return all(op_func(visit_counts.get(c, 0), count) for c in cells)
@@ -1003,24 +1137,46 @@ def draw_requirements(surface, requirements, cell_size):
 
 
 def draw_global_requirements(surface, global_reqs, font, panel_x_start):
+    """Отрисовывает глобальные требования с переносом текста."""
     y = 10
+    max_width = SIDE_PANEL_WIDTH - 30  # Отступы по бокам
+    line_spacing = 4
+    block_spacing = 12
+    
     for req in global_reqs:
         req_type = req.get("type", "global")
+        text = req["text"]
+        
+        # Выбор цвета по типу
         if req_type == "steps":
             color = COLOR_GLOBAL_REQ
         elif req_type == "sequence":
             color = (180, 150, 255)  # Фиолетовый для sequence
-        else:
+        elif req_type == "global":
             color = (200, 200, 200)
+        else:
+            color = (180, 180, 180)
         
-        ts = font.render(req["text"], True, color)
-        tr = ts.get_rect(topleft=(panel_x_start + 10, y))
-        bg = tr.inflate(10, 6)
-        bg.topleft = (panel_x_start + 5, y - 3)
-        pygame.draw.rect(surface, (20, 20, 20), bg)
-        pygame.draw.rect(surface, color, bg, 1)
-        surface.blit(ts, tr)
-        y += tr.height + 10
+        # Переносим текст
+        lines = wrap_text(text, font, max_width)
+        
+        # Вычисляем общую высоту блока
+        total_height = sum(font.get_height() for _ in lines) + line_spacing * (len(lines) - 1)
+        
+        # Рисуем фон для всего блока
+        bg_rect = pygame.Rect(panel_x_start + 5, y - 3, SIDE_PANEL_WIDTH - 10, total_height + 10)
+        pygame.draw.rect(surface, (20, 20, 20), bg_rect)
+        pygame.draw.rect(surface, color, bg_rect, 1)
+        
+        # Рисуем каждую строку
+        line_y = y
+        for line in lines:
+            ts = font.render(line, True, color)
+            surface.blit(ts, (panel_x_start + 10, line_y))
+            line_y += font.get_height() + line_spacing
+        
+        y += total_height + block_spacing
+
 
 
 def draw_editor_indicator(surface, panel_x_start, panel_height):
@@ -1313,7 +1469,6 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                         print("[UNDO] История пуста")
                     continue
 
-                # Обработка движения
                 dx, dy, move = 0, 0, None
                 if event.key == pygame.K_UP:    dx, dy, move = 0, -1, "u"
                 elif event.key == pygame.K_DOWN:  dx, dy, move = 0, 1, "d"
@@ -1324,6 +1479,18 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                     if show_requirements and len(path_positions) == 1:
                         show_requirements = False
                     
+                    # Направление движения
+                    move_dir = {"u": "up", "d": "down", "l": "left", "r": "right"}[move]
+                    
+                    # === Проверка яда на выходе из текущей клетки (включая границы) ===
+                    if check_poison_on_exit(player_pos, move_dir, poison_data):
+                        movable_state_before = movable_manager.copy_state()
+                        state_manager.push(player_pos, path_positions, player_history, 
+                                          dev_recording, movable_state_before)
+                        print("☠ ПОГИБ от яда на выходе! (Z = откат, L = загрузка)")
+                        load_level(current_idx, clear_history=False)
+                        continue
+                    
                     # Сохраняем состояние movable ДО попытки хода
                     movable_state_before = movable_manager.copy_state()
                     
@@ -1333,7 +1500,7 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                         walls_data, poison_data, is_path_clear
                     )
                     
-                    # Проверка яда
+                    # Проверка яда от толкания коробок
                     if result['hit_poison']:
                         state_manager.push(player_pos, path_positions, player_history, 
                                           dev_recording, movable_state_before)
@@ -1341,8 +1508,16 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                         load_level(current_idx, clear_history=False)
                         continue
                     
-                    # Если можно двигаться
+                    # Проверка яда на входе в целевую клетку
                     if result['can_move']:
+                        target = result['target_pos']
+                        if check_poison_on_entry(target, move_dir, poison_data, GRID_COLS, GRID_ROWS):
+                            state_manager.push(player_pos, path_positions, player_history, 
+                                              dev_recording, movable_state_before)
+                            print("☠ ПОГИБ от яда на входе! (Z = откат, L = загрузка)")
+                            load_level(current_idx, clear_history=False)
+                            continue
+                        
                         # Сохраняем состояние для undo
                         state_manager.push(player_pos, path_positions, player_history, 
                                           dev_recording, movable_state_before)
@@ -1350,7 +1525,6 @@ def run_game(selected_idx, hints_enabled, edit_mode_enabled=False):
                         # Перемещаем игрока
                         player_pos = list(result['target_pos'])
                         
-                        # Логируем перемещения коробок
                         if result['moves_made']:
                             print(f"[BOX] Сдвинуто: {len(result['moves_made'])} объектов")
 
