@@ -1,5 +1,6 @@
 import copy
 
+
 class StateManager:
     def __init__(self, max_history=500):
         self.history = []
@@ -12,7 +13,6 @@ class StateManager:
                 'path': copy.deepcopy(path_positions),
                 'hist': list(player_history),
                 'dev': list(dev_recording),
-                # ИЗМЕНЕНО: проверка на is not None вместо простого if
                 'movable': copy.deepcopy(movable_state) if movable_state is not None else None,
                 'step_count': len(path_positions)
             }
@@ -31,7 +31,6 @@ class StateManager:
             'path': copy.deepcopy(path_positions),
             'hist': list(player_history),
             'dev': list(dev_recording),
-            # ИЗМЕНЕНО: проверка на is not None
             'movable': copy.deepcopy(movable_state) if movable_state is not None else None,
             'step_count': len(path_positions)
         }
